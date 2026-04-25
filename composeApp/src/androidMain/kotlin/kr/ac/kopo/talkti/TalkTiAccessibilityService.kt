@@ -17,6 +17,12 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.Toast
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.content.Intent
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -26,11 +32,61 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var windowManager: WindowManager? = null
     private var floatingButton: Button? = null
 
+    // STT (음성 인식) 객체 추가
+    private var speechRecognizer: SpeechRecognizer? = null
+
     // 서비스가 시스템에 성공적으로 연결되었을 때 호출됨 (오버레이 생성의 최적 타이밍)
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.d(TAG, "접근성 서비스 연결됨 - 플로팅 버튼 생성 시작")
+        initSpeechRecognizer()
         createFloatingButton()
+    }
+
+    // 1. 음성 인식기 초기화 함수
+    private fun initSpeechRecognizer() {
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+            setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {
+                    floatingButton?.text = "듣는 중..."
+                    floatingButton?.setBackgroundColor(Color.RED)
+                    Toast.makeText(this@TalkTiAccessibilityService, "말씀해 주세요!", Toast.LENGTH_SHORT).show()
+                }
+
+                override fun onResults(results: Bundle?) {
+                    // 음성 인식 성공 시
+                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    if (!matches.isNullOrEmpty()) {
+                        val userCommand = matches[0]
+                        Log.d(TAG, "사용자 음성 명령: $userCommand")
+                        Toast.makeText(this@TalkTiAccessibilityService, "명령: $userCommand", Toast.LENGTH_SHORT).show()
+
+                        // ⭐️ 음성 명령을 인자로 넘기며 화면 캡처 시작!
+                        captureScreenForLLM(userCommand)
+                    }
+                    resetButtonUI()
+                }
+
+                override fun onError(error: Int) {
+                    Log.e(TAG, "음성 인식 에러 코드: $error")
+                    Toast.makeText(this@TalkTiAccessibilityService, "음성 인식 실패", Toast.LENGTH_SHORT).show()
+                    resetButtonUI()
+                }
+
+                // 사용하지 않는 콜백들은 비워둡니다
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+        }
+    }
+
+    private fun resetButtonUI() {
+        floatingButton?.text = "TalkTi 호출"
+        floatingButton?.setBackgroundColor(Color.parseColor("#FEE500"))
     }
 
     private fun createFloatingButton() {
@@ -45,8 +101,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
             // 버튼 클릭 이벤트 설정
             setOnClickListener {
-                Toast.makeText(this@TalkTiAccessibilityService, "화면 캡처 중...", Toast.LENGTH_SHORT).show()
-                captureScreenForLLM()
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+                }
+                speechRecognizer?.startListening(intent)
             }
         }
 
@@ -100,7 +159,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     // 화면 캡처를 실행하는 함수
-    fun captureScreenForLLM() {
+    fun captureScreenForLLM(userCommand: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
@@ -108,24 +167,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 @RequiresApi(Build.VERSION_CODES.R)
                 object : TakeScreenshotCallback {
                     override fun onSuccess(screenshotResult: ScreenshotResult) {
-                        Log.d(TAG, "스크린샷 캡처 성공!")
-
                         val hardwareBuffer = screenshotResult.hardwareBuffer
-                        val colorSpace = screenshotResult.colorSpace
-
-                        // 1. HardwareBuffer를 Bitmap으로 변환
-                        val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                        val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshotResult.colorSpace)
 
                         if (bitmap != null) {
-                            // 2. Bitmap을 Base64 String으로 변환 (서버 전송용)
                             val base64Image = bitmapToBase64(bitmap)
-                            Log.d(TAG, "Base64 이미지 변환 완료 (문자열 길이: ${base64Image.length})")
-
-                            // TODO: 이 시점에 앞서 수집한 UI 트리(로그로 찍던 텍스트들)와
-                            // base64Image를 묶어서 Ktor 서버로 전송하면 됩니다!
+                            Log.d(TAG, "최종 데이터 수집 완료! 명령: [$userCommand], 이미지 길이: ${base64Image.length}")
                         }
-
-                        // 중요: 메모리 누수 방지를 위해 반드시 close() 호출
                         hardwareBuffer.close()
                     }
 
@@ -147,5 +195,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val byteArray = outputStream.toByteArray()
         // NO_WRAP: 줄바꿈 없이 한 줄의 긴 문자열로 생성 (서버에서 파싱하기 좋음)
         return Base64.encodeToString(byteArray, Base64.NO_WRAP)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        speechRecognizer?.destroy()
+        if (floatingButton != null) {
+            windowManager?.removeView(floatingButton)
+        }
     }
 }
