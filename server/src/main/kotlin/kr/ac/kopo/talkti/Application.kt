@@ -6,17 +6,17 @@ import io.ktor.server.netty.*
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.*
-
-// ⭐️ 추가된 Import 문 (JSON 파싱용)
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
-
 import kr.ac.kopo.talkti.models.ScreenStateRequest
 import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
 
-// (팁) SERVER_PORT 변수가 정의되지 않았다면 8080으로 직접 적어주셔도 됩니다.
+// ⭐️ 파일 입출력 및 Base64 디코딩을 위한 패키지 추가
+import java.io.File
+import java.util.Base64
+
 val SERVER_PORT = 8080
 
 fun main() {
@@ -25,21 +25,53 @@ fun main() {
 }
 
 fun Application.module() {
-
-    // ⭐️ 핵심 추가: JSON 데이터를 객체(DTO)로 상호 변환해주는 플러그인 설치
     install(ContentNegotiation) {
         json(Json {
-            ignoreUnknownKeys = true // 클라이언트가 추가 데이터를 보내도 에러 없이 무시
+            ignoreUnknownKeys = true
             prettyPrint = true
         })
     }
 
     routing {
         post("/analyze") {
-            // 이제 ContentNegotiation 덕분에 receive<ScreenStateRequest>()가 정상 작동합니다!
             val request = call.receive<ScreenStateRequest>()
             println("서버 데이터 수신 성공! 명령: ${request.userVoiceCommand}")
 
+            // ==========================================
+            // 📁 1. 저장할 폴더(디렉토리) 생성
+            // ==========================================
+            val uploadDir = File("uploads")
+            if (!uploadDir.exists()) {
+                uploadDir.mkdirs() // 폴더가 없으면 새로 만듭니다
+            }
+
+            // 파일명 중복을 막기 위한 고유 타임스탬프
+            val timestamp = System.currentTimeMillis()
+
+            // ==========================================
+            // 🖼️ 2. 스크린샷 이미지 (Base64 -> JPG 파일) 저장
+            // ==========================================
+            request.screenshotBase64?.let { base64String ->
+                try {
+                    // 안드로이드에서 보낸 Base64 문자열을 다시 바이트 배열로 해독
+                    val imageBytes = Base64.getDecoder().decode(base64String)
+                    val imageFile = File(uploadDir, "screenshot_$timestamp.jpg")
+                    imageFile.writeBytes(imageBytes)
+                    println("✅ 이미지 저장 완료: ${imageFile.absolutePath}")
+                } catch (e: Exception) {
+                    println("❌ 이미지 저장 실패: ${e.message}")
+                }
+            }
+
+            // ==========================================
+            // 🌳 3. UI 노드 정보 (String -> JSON 파일) 저장
+            // ==========================================
+            val uiTreeFile = File(uploadDir, "uitree_$timestamp.json")
+            uiTreeFile.writeText(request.uiTreeJson)
+            println("✅ UI 트리 저장 완료: ${uiTreeFile.absolutePath}")
+
+
+            // 클라이언트에게 돌려줄 모의 응답
             val mockResponse = GuideActionResponse(
                 actionType = "CLICK",
                 targetBounds = RectDto(500, 1200, 800, 1400),

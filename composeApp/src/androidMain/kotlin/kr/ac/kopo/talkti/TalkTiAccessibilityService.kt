@@ -19,6 +19,7 @@ import android.widget.Button
 import android.widget.Toast
 import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -31,6 +32,8 @@ import kotlinx.serialization.Serializable
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.json.Json
+import kr.ac.kopo.talkti.models.RectDto
 
 @Serializable
 data class ScreenStateRequest(
@@ -41,8 +44,9 @@ data class ScreenStateRequest(
 
 @Serializable
 data class GuideActionResponse(
-    val ttsMessage: String,
-    val targetBounds: List<Int>? = null // Adjust types based on your server logic
+    val actionType: String,
+    val targetBounds: RectDto?,
+    val ttsMessage: String
 )
 
 class TalkTiAccessibilityService : AccessibilityService() {
@@ -190,11 +194,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     override fun onSuccess(screenshotResult: ScreenshotResult) {
                         val hardwareBuffer = screenshotResult.hardwareBuffer
                         val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshotResult.colorSpace)
+                        val realUiTree = extractScreenTree()
 
                         if (bitmap != null) {
                             val base64Image = bitmapToBase64(bitmap)
                             Log.d(TAG, "최종 데이터 수집 완료! 명령: [$userCommand], 이미지 길이: ${base64Image.length}")
-                            sendDataToServer(userCommand, base64Image)
+                            sendDataToServer(userCommand, base64Image, realUiTree)
                         }
                         hardwareBuffer.close()
                     }
@@ -209,7 +214,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun sendDataToServer(command: String, base64Image: String) {
+    private fun sendDataToServer(command: String, base64Image: String, uiTree: String) {
         val serverUrl = "http://192.168.0.6:8080/analyze"
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -218,7 +223,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     contentType(ContentType.Application.Json)
                     setBody(ScreenStateRequest(
                         userVoiceCommand = command,
-                        uiTreeJson = "{}", // 나중에 UI 트리 데이터 추가
+                        uiTreeJson = uiTree,
                         screenshotBase64 = base64Image
                     ))
                 }.body()
@@ -254,5 +259,57 @@ class TalkTiAccessibilityService : AccessibilityService() {
         if (floatingButton != null) {
             windowManager?.removeView(floatingButton)
         }
+    }
+
+    // ⭐️ 1. 추출한 UI 요소를 담을 내부 데이터 모델
+    @Serializable
+    data class UiElement(
+        val text: String,
+        val id: String,
+        val className: String,
+        val bounds: RectDto
+    )
+
+    // ⭐️ 2. 현재 화면의 노드들을 재귀적으로 탐색하여 JSON 문자열로 반환하는 함수
+    private fun extractScreenTree(): String {
+        val rootNode = rootInActiveWindow ?: return "[]"
+        val elements = mutableListOf<UiElement>()
+
+        fun traverse(node: AccessibilityNodeInfo?) {
+            if (node == null) return
+
+            // 화면에 실제로 보이는 노드만 처리
+            if (node.isVisibleToUser) {
+                val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
+                val id = node.viewIdResourceName ?: "no_id"
+                val className = node.className?.toString() ?: "no_class"
+
+                // 텍스트가 있거나 클릭 가능한 '의미 있는' 노드만 리스트에 추가
+                if (text.isNotBlank() || node.isClickable) {
+                    val rect = Rect()
+                    node.getBoundsInScreen(rect)
+
+                    elements.add(
+                        UiElement(
+                            text = text,
+                            id = id,
+                            className = className,
+                            // shared 모듈에서 만든 RectDto 재사용
+                            bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                        )
+                    )
+                }
+            }
+
+            // 자식 노드 순회
+            for (i in 0 until node.childCount) {
+                traverse(node.getChild(i))
+            }
+        }
+
+        traverse(rootNode)
+
+        // 수집된 List를 JSON 문자열로 변환 (예: "[{text: '택시호출', ...}, {...}]")
+        return Json.encodeToString(elements)
     }
 }
