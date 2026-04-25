@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+    alias(libs.plugins.kotlinxSerialization)
 }
 
 kotlin {
@@ -66,5 +67,8 @@ android {
 
 dependencies {
     debugImplementation(libs.compose.uiTooling)
+    implementation("io.ktor:ktor-client-android:3.3.0")
+    implementation("io.ktor:ktor-client-content-negotiation:3.3.0")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
 }
 

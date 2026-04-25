@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidLibrary)
+    alias(libs.plugins.kotlinxSerialization)
 }
 
 kotlin {
@@ -17,6 +18,9 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
+            implementation("io.ktor:ktor-client-android:3.3.0")
+            implementation("io.ktor:ktor-client-content-negotiation:3.3.0")
+            implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -34,4 +38,10 @@ android {
     defaultConfig {
         minSdk = libs.versions.android.minSdk.get().toInt()
     }
+}
+
+dependencies {
+    implementation("io.ktor:ktor-client-android:3.3.0")
+    implementation("io.ktor:ktor-client-content-negotiation:3.3.0")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
 }

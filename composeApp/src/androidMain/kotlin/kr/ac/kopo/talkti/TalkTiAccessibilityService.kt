@@ -23,6 +23,27 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import io.ktor.client.call.body
+import io.ktor.client.request.*
+import io.ktor.http.*
+import kotlinx.coroutines.*
+import kotlinx.serialization.Serializable
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.serialization.kotlinx.json.*
+
+@Serializable
+data class ScreenStateRequest(
+    val userVoiceCommand: String,
+    val uiTreeJson: String,
+    val screenshotBase64: String
+)
+
+@Serializable
+data class GuideActionResponse(
+    val ttsMessage: String,
+    val targetBounds: List<Int>? = null // Adjust types based on your server logic
+)
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -173,6 +194,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         if (bitmap != null) {
                             val base64Image = bitmapToBase64(bitmap)
                             Log.d(TAG, "최종 데이터 수집 완료! 명령: [$userCommand], 이미지 길이: ${base64Image.length}")
+                            sendDataToServer(userCommand, base64Image)
                         }
                         hardwareBuffer.close()
                     }
@@ -184,6 +206,35 @@ class TalkTiAccessibilityService : AccessibilityService() {
             )
         } else {
             Log.e(TAG, "이 스크린샷 방식은 안드로이드 11(API 30) 이상에서만 지원됩니다.")
+        }
+    }
+
+    private fun sendDataToServer(command: String, base64Image: String) {
+        val serverUrl = "http://192.168.0.6:8080/analyze"
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response: GuideActionResponse = client.post(serverUrl) {
+                    contentType(ContentType.Application.Json)
+                    setBody(ScreenStateRequest(
+                        userVoiceCommand = command,
+                        uiTreeJson = "{}", // 나중에 UI 트리 데이터 추가
+                        screenshotBase64 = base64Image
+                    ))
+                }.body()
+
+                // 서버 응답 수신 성공!
+                withContext(Dispatchers.Main) {
+                    Log.d(TAG, "서버 응답 성공: ${response.ttsMessage}")
+                    Toast.makeText(this@TalkTiAccessibilityService, "가이드: ${response.ttsMessage}", Toast.LENGTH_LONG).show()
+                    // TODO: 여기서 response.targetBounds 좌표를 이용해 오버레이 그리기
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "통신 오류: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@TalkTiAccessibilityService, "서버 연결 실패", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
