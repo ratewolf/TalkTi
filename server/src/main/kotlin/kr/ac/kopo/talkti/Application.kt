@@ -72,11 +72,26 @@ fun Application.module() {
 
 
             // 클라이언트에게 돌려줄 모의 응답
-            val mockResponse = GuideActionResponse(
-                actionType = "CLICK",
-                targetBounds = RectDto(500, 1200, 800, 1400),
-                ttsMessage = "화면 하단의 노란색 호출 버튼을 눌러주세요."
-            )
+            val mockResponse = when {
+                request.userVoiceCommand.contains("택시") -> GuideActionResponse(
+                    actionType = "CLICK",
+                    targetBounds = RectDto(120, 780, 960, 920),
+                    ttsMessage = "택시 호출 버튼을 눌러주세요."
+                )
+
+                request.userVoiceCommand.contains("지도") ||
+                        request.userVoiceCommand.contains("길") -> GuideActionResponse(
+                    actionType = "CLICK",
+                    targetBounds = RectDto(80, 180, 1000, 300),
+                    ttsMessage = "상단 검색창을 눌러 목적지를 입력해주세요."
+                )
+
+                else -> GuideActionResponse(
+                    actionType = "SPEAK",
+                    targetBounds = null,
+                    ttsMessage = "원하는 작업을 다시 한 번 말씀해주세요."
+                )
+            }
 
             call.respond(mockResponse)
         }

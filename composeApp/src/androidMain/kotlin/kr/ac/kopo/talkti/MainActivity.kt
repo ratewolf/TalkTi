@@ -30,7 +30,14 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            App()
+            App(
+                onStartSetupClick = {
+                    val intent = android.content.Intent(
+                        android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS
+                    )
+                    startActivity(intent)
+                }
+            )
         }
     }
 }

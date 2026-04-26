@@ -31,14 +31,18 @@ private val TextPrimary = Color(0xFF202124)
 private val TextSecondary = Color(0xFF5F6368)
 
 @Composable
-fun App() {
+fun App(
+    onStartSetupClick: () -> Unit = {}
+) {
     MaterialTheme {
-        TalkTiHomeScreen()
+        TalkTiHomeScreen(
+            onStartSetupClick = onStartSetupClick
+        )
     }
 }
 
 @Composable
-private fun TalkTiHomeScreen() {
+private fun TalkTiHomeScreen(onStartSetupClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -109,9 +113,7 @@ private fun TalkTiHomeScreen() {
         Spacer(modifier = Modifier.height(28.dp))
 
         Button(
-            onClick = {
-                // 다음 단계에서 접근성 설정 화면 이동 기능 연결 추천
-            },
+            onClick = onStartSetupClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(68.dp),
@@ -122,7 +124,7 @@ private fun TalkTiHomeScreen() {
             )
         ) {
             Text(
-                text = "TalkTi 사용 준비하기",
+                text = "TalkTi 접근성 설정 열기",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )

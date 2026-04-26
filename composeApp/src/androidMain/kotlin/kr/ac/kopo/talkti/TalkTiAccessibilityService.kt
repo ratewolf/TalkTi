@@ -61,6 +61,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var speechRecognizer: SpeechRecognizer? = null
 
     private var highlightView: android.view.View? = null
+    private var highlightJob: Job? = null
 
     // 서비스가 시스템에 성공적으로 연결되었을 때 호출됨 (오버레이 생성의 최적 타이밍)
     override fun onServiceConnected() {
@@ -365,9 +366,18 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         highlightView = highlight
         windowManager?.addView(highlightView, params)
+
+        highlightJob?.cancel()
+        highlightJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(5000)
+            removeTargetHighlight()
+        }
     }
 
     private fun removeTargetHighlight() {
+        highlightJob?.cancel()
+        highlightJob = null
+
         highlightView?.let {
             windowManager?.removeView(it)
             highlightView = null
