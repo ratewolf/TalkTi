@@ -60,6 +60,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     // STT (음성 인식) 객체 추가
     private var speechRecognizer: SpeechRecognizer? = null
 
+    private var highlightView: android.view.View? = null
+
     // 서비스가 시스템에 성공적으로 연결되었을 때 호출됨 (오버레이 생성의 최적 타이밍)
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -74,8 +76,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
             setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     floatingButton?.text = "듣는 중..."
-                    floatingButton?.setBackgroundColor(Color.RED)
-                    Toast.makeText(this@TalkTiAccessibilityService, "말씀해 주세요!", Toast.LENGTH_SHORT).show()
+                    floatingButton?.setBackgroundColor(Color.parseColor("#34A853"))
+                    Toast.makeText(
+                        this@TalkTiAccessibilityService,
+                        "천천히 말씀해 주세요.",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
 
                 override fun onResults(results: Bundle?) {
@@ -110,7 +116,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun resetButtonUI() {
-        floatingButton?.text = "TalkTi 호출"
+        floatingButton?.text = "TalkTi\n말하기"
         floatingButton?.setBackgroundColor(Color.parseColor("#FEE500"))
     }
 
@@ -119,16 +125,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // 1. 버튼 UI 생성 (별도 XML 없이 코드로 뷰 생성)
         floatingButton = Button(this).apply {
-            text = "TalkTi 호출"
-            setBackgroundColor(Color.parseColor("#FEE500")) // 카카오 옐로우
+            text = "TalkTi\n말하기"
+            setBackgroundColor(Color.parseColor("#FEE500"))
             setTextColor(Color.BLACK)
-            textSize = 16f
+            textSize = 18f
+            minHeight = 120
+            minWidth = 180
+            isAllCaps = false
+            elevation = 12f
 
-            // 버튼 클릭 이벤트 설정
             setOnClickListener {
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                    )
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 }
                 speechRecognizer?.startListening(intent)
             }
@@ -231,8 +244,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 // 서버 응답 수신 성공!
                 withContext(Dispatchers.Main) {
                     Log.d(TAG, "서버 응답 성공: ${response.ttsMessage}")
-                    Toast.makeText(this@TalkTiAccessibilityService, "가이드: ${response.ttsMessage}", Toast.LENGTH_LONG).show()
-                    // TODO: 여기서 response.targetBounds 좌표를 이용해 오버레이 그리기
+
+                    Toast.makeText(
+                        this@TalkTiAccessibilityService,
+                        response.ttsMessage,
+                        Toast.LENGTH_LONG
+                    ).show()
+
+                    response.targetBounds?.let { bounds ->
+                        showTargetHighlight(bounds, response.ttsMessage)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "통신 오류: ${e.message}")
@@ -256,6 +277,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         speechRecognizer?.destroy()
+        removeTargetHighlight()
         if (floatingButton != null) {
             windowManager?.removeView(floatingButton)
         }
@@ -311,5 +333,44 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // 수집된 List를 JSON 문자열로 변환 (예: "[{text: '택시호출', ...}, {...}]")
         return Json.encodeToString(elements)
+    }
+
+    private fun showTargetHighlight(bounds: RectDto, message: String) {
+        removeTargetHighlight()
+
+        val highlight = android.widget.TextView(this).apply {
+            text = message
+            setTextColor(Color.BLACK)
+            textSize = 18f
+            setBackgroundColor(Color.parseColor("#CCFEE500"))
+            setPadding(24, 16, 24, 16)
+            gravity = Gravity.CENTER
+        }
+
+        val width = (bounds.right - bounds.left).coerceAtLeast(160)
+        val height = (bounds.bottom - bounds.top).coerceAtLeast(100)
+
+        val params = WindowManager.LayoutParams(
+            width,
+            height,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = bounds.left
+            y = bounds.top
+        }
+
+        highlightView = highlight
+        windowManager?.addView(highlightView, params)
+    }
+
+    private fun removeTargetHighlight() {
+        highlightView?.let {
+            windowManager?.removeView(it)
+            highlightView = null
+        }
     }
 }
