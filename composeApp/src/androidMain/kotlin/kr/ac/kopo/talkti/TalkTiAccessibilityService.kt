@@ -24,6 +24,7 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.http.*
@@ -39,14 +40,18 @@ import kr.ac.kopo.talkti.models.RectDto
 data class ScreenStateRequest(
     val userVoiceCommand: String,
     val uiTreeJson: String,
-    val screenshotBase64: String
+    val screenshotBase64: String,
+    val screenSessionId: String? = null
 )
 
 @Serializable
 data class GuideActionResponse(
     val actionType: String,
     val targetBounds: RectDto?,
-    val ttsMessage: String
+    val ttsMessage: String,
+    val targetCandidateId: String? = null,
+    val confidence: Double? = null,
+    val screenSessionId: String? = null
 )
 
 class TalkTiAccessibilityService : AccessibilityService() {
@@ -59,6 +64,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     // STT (음성 인식) 객체 추가
     private var speechRecognizer: SpeechRecognizer? = null
+    private var textToSpeech: TextToSpeech? = null
 
     private var highlightView: android.view.View? = null
     private var highlightJob: Job? = null
@@ -68,6 +74,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.d(TAG, "접근성 서비스 연결됨 - 플로팅 버튼 생성 시작")
         initSpeechRecognizer()
+        initTextToSpeech()
         createFloatingButton()
     }
 
@@ -113,6 +120,21 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
+        }
+    }
+
+
+    private fun initTextToSpeech() {
+        textToSpeech = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val result = textToSpeech?.setLanguage(java.util.Locale.KOREAN)
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.e(TAG, "TTS 한국어 설정 실패")
+                }
+            } else {
+                Log.e(TAG, "TTS 초기화 실패")
+                textToSpeech = null
+            }
         }
     }
 
@@ -199,6 +221,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     // 화면 캡처를 실행하는 함수
     fun captureScreenForLLM(userCommand: String) {
+        val screenSessionId = "screen_${System.currentTimeMillis()}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
@@ -213,7 +236,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         if (bitmap != null) {
                             val base64Image = bitmapToBase64(bitmap)
                             Log.d(TAG, "최종 데이터 수집 완료! 명령: [$userCommand], 이미지 길이: ${base64Image.length}")
-                            sendDataToServer(userCommand, base64Image, realUiTree)
+                            sendDataToServer(userCommand, base64Image, realUiTree, screenSessionId)
                         }
                         hardwareBuffer.close()
                     }
@@ -228,7 +251,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun sendDataToServer(command: String, base64Image: String, uiTree: String) {
+    private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
         val serverUrl = "http://192.168.0.6:8080/analyze"
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -238,7 +261,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     setBody(ScreenStateRequest(
                         userVoiceCommand = command,
                         uiTreeJson = uiTree,
-                        screenshotBase64 = base64Image
+                        screenshotBase64 = base64Image,
+                        screenSessionId = screenSessionId
                     ))
                 }.body()
 
@@ -246,14 +270,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 withContext(Dispatchers.Main) {
                     Log.d(TAG, "서버 응답 성공: ${response.ttsMessage}")
 
-                    Toast.makeText(
-                        this@TalkTiAccessibilityService,
-                        response.ttsMessage,
-                        Toast.LENGTH_LONG
-                    ).show()
+                    speakTts(response.ttsMessage)
 
-                    response.targetBounds?.let { bounds ->
-                        showTargetHighlight(bounds, response.ttsMessage)
+                    if (isValidGuideResponse(response, screenSessionId)) {
+                        response.targetBounds?.let { bounds ->
+                            showTargetHighlight(bounds, response.ttsMessage)
+                        }
+                    } else {
+                        Toast.makeText(this@TalkTiAccessibilityService, "화면을 다시 분석해 주세요.", Toast.LENGTH_SHORT).show()
                     }
                 }
             } catch (e: Exception) {
@@ -263,6 +287,37 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 }
             }
         }
+    }
+
+
+    private fun speakTts(message: String) {
+        try {
+            textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "talkti_tts")
+        } catch (e: Exception) {
+            Log.e(TAG, "TTS 재생 실패: ${e.message}")
+        }
+    }
+
+    private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
+        if (response.actionType == "CLICK" && response.targetBounds == null) return false
+
+        if (response.screenSessionId != null && response.screenSessionId != requestSessionId) return false
+
+        if (response.confidence != null && response.confidence < 0.3) return false
+
+        response.targetBounds?.let { bounds ->
+            val screenRect = Rect()
+            rootInActiveWindow?.getBoundsInScreen(screenRect)
+            if (screenRect.width() <= 0 || screenRect.height() <= 0) return false
+
+            val outOfScreen = bounds.left < 0 || bounds.top < 0 ||
+                bounds.right > screenRect.right || bounds.bottom > screenRect.bottom ||
+                bounds.left >= bounds.right || bounds.top >= bounds.bottom
+
+            if (outOfScreen) return false
+        }
+
+        return true
     }
 
     // Bitmap을 Base64 문자열로 압축 및 변환하는 헬퍼 함수
@@ -278,6 +333,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         speechRecognizer?.destroy()
+        textToSpeech?.stop()
+        textToSpeech?.shutdown()
         removeTargetHighlight()
         if (floatingButton != null) {
             windowManager?.removeView(floatingButton)
@@ -287,38 +344,49 @@ class TalkTiAccessibilityService : AccessibilityService() {
     // ⭐️ 1. 추출한 UI 요소를 담을 내부 데이터 모델
     @Serializable
     data class UiElement(
+        val candidateId: String,
         val text: String,
+        val contentDescription: String,
         val id: String,
         val className: String,
-        val bounds: RectDto
+        val bounds: RectDto,
+        val clickable: Boolean,
+        val enabled: Boolean,
+        val visibleToUser: Boolean
     )
 
     // ⭐️ 2. 현재 화면의 노드들을 재귀적으로 탐색하여 JSON 문자열로 반환하는 함수
     private fun extractScreenTree(): String {
         val rootNode = rootInActiveWindow ?: return "[]"
         val elements = mutableListOf<UiElement>()
+        var candidateCounter = 0
 
         fun traverse(node: AccessibilityNodeInfo?) {
             if (node == null) return
 
             // 화면에 실제로 보이는 노드만 처리
             if (node.isVisibleToUser) {
-                val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
+                val text = node.text?.toString() ?: ""
+                val contentDescription = node.contentDescription?.toString() ?: ""
                 val id = node.viewIdResourceName ?: "no_id"
                 val className = node.className?.toString() ?: "no_class"
 
                 // 텍스트가 있거나 클릭 가능한 '의미 있는' 노드만 리스트에 추가
-                if (text.isNotBlank() || node.isClickable) {
+                if (text.isNotBlank() || contentDescription.isNotBlank() || node.isClickable) {
                     val rect = Rect()
                     node.getBoundsInScreen(rect)
 
                     elements.add(
                         UiElement(
+                            candidateId = "candidate_${candidateCounter++}",
                             text = text,
+                            contentDescription = contentDescription,
                             id = id,
                             className = className,
-                            // shared 모듈에서 만든 RectDto 재사용
-                            bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                            bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom),
+                            clickable = node.isClickable,
+                            enabled = node.isEnabled,
+                            visibleToUser = node.isVisibleToUser
                         )
                     )
                 }
