@@ -17,7 +17,6 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.Toast
-import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.content.Intent
 import android.graphics.Rect
 import android.os.Bundle
@@ -30,29 +29,10 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
-import io.ktor.client.HttpClient
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import kr.ac.kopo.talkti.models.ScreenStateRequest
+import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
-
-@Serializable
-data class ScreenStateRequest(
-    val userVoiceCommand: String,
-    val uiTreeJson: String,
-    val screenshotBase64: String,
-    val screenSessionId: String? = null
-)
-
-@Serializable
-data class GuideActionResponse(
-    val actionType: String,
-    val targetBounds: RectDto?,
-    val ttsMessage: String,
-    val targetCandidateId: String? = null,
-    val confidence: Double? = null,
-    val screenSessionId: String? = null
-)
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -252,7 +232,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
-        val serverUrl = "http://192.168.0.6:8080/analyze"
+        val serverUrl = "http://192.168.24.166:8080/analyze"
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -303,7 +283,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         if (response.screenSessionId != null && response.screenSessionId != requestSessionId) return false
 
-        if (response.confidence != null && response.confidence < 0.3) return false
+        if (response.confidence != null && response.confidence!! < 0.3) return false
 
         response.targetBounds?.let { bounds ->
             val screenRect = Rect()
