@@ -3,6 +3,7 @@ package kr.ac.kopo.talkti.app.overlay
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -10,6 +11,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.util.TypedValue
+import android.widget.TextView
+import kotlin.math.abs
 
 /**
  * 앱 파트: 드래그 가능한 플로팅 버튼 및 드롭다운 메뉴 관리
@@ -37,7 +40,7 @@ class FloatingMenuManager(
         y = 300
     }
 
-    private var mainButton: Button? = null
+    private var mainButton: TextView? = null
 
     fun show() {
         if (rootLayout != null) return
@@ -45,17 +48,19 @@ class FloatingMenuManager(
         rootLayout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, 0)
         }
 
-        // 1. 메인 버튼 (똑띠 아이콘 + 드롭다운 화살표 역할)
-        mainButton = Button(context).apply {
-            text = "똑띠 ▼"
-            setBackgroundColor(Color.parseColor("#FEE500"))
-            setTextColor(Color.BLACK)
-            setPadding(20, 10, 20, 10)
-            elevation = 15f
-            
-            // 드래그 및 클릭 처리
+        // 1. 메인 원형 버튼: 기본 ... 아이콘
+        mainButton = createCircleButton(
+            icon = "…",
+            sizeDp = 64,
+            backgroundColor = Color.parseColor("#80A867"),
+            iconColor = Color.BLACK,
+            iconTextSize = 32f
+        ).apply {
+            elevation = 0f
+
             setOnTouchListener(object : View.OnTouchListener {
                 private var initialX = 0
                 private var initialY = 0
@@ -73,10 +78,12 @@ class FloatingMenuManager(
                             isMoving = false
                             return true
                         }
+
                         MotionEvent.ACTION_MOVE -> {
                             val dx = (event.rawX - initialTouchX).toInt()
                             val dy = (event.rawY - initialTouchY).toInt()
-                            if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+
+                            if (abs(dx) > 10 || abs(dy) > 10) {
                                 isMoving = true
                                 params.x = initialX + dx
                                 params.y = initialY + dy
@@ -84,6 +91,7 @@ class FloatingMenuManager(
                             }
                             return true
                         }
+
                         MotionEvent.ACTION_UP -> {
                             if (!isMoving) {
                                 toggleMenu()
@@ -99,42 +107,20 @@ class FloatingMenuManager(
         // 2. 서브 메뉴 레이아웃
         subMenuLayout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             visibility = View.GONE
-            setBackgroundColor(Color.parseColor("#F0F0F0"))
-            setPadding(10, 10, 10, 10)
-            
-            addView(createSubButton("📱 앱 사용 안내") { onAppGuideClick() })
-            addView(createSubButton("🏪 키오스크 안내") { onKioskModeClick() })
-            addView(createSubButton("⚙️ 똑띠 앱 열기") { onOpenAppClick() })
+            setPadding(0, 0, 0, dp(8))
+
+            addView(createIconMenuItem("🎤") { onAppGuideClick() })
+            addView(createIconMenuItem("⚙️") { onOpenAppClick() })
+            addView(createIconMenuItem("📖") { onKioskModeClick() })
         }
 
-        rootLayout?.addView(mainButton)
+        // 메뉴가 위에 뜨고, 메인 버튼이 아래에 오도록 추가
         rootLayout?.addView(subMenuLayout)
+        rootLayout?.addView(mainButton)
 
         windowManager.addView(rootLayout, params)
-    }
-
-    private fun createSubButton(text: String, onClick: () -> Unit): Button {
-        return Button(context).apply {
-            this.text = text
-            this.isAllCaps = false
-            this.textSize = 14f
-            setBackgroundColor(Color.WHITE)
-            setTextColor(Color.BLACK)
-            val margin = 5
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, margin, 0, margin)
-            }
-            layoutParams = params
-            
-            setOnClickListener {
-                onClick()
-                toggleMenu() // 클릭 후 메뉴 닫기
-            }
-        }
     }
 
     private fun toggleMenu() {
@@ -159,5 +145,74 @@ class FloatingMenuManager(
             windowManager.removeView(it)
             rootLayout = null
         }
+    }
+
+    private fun createIconMenuItem(
+        icon: String,
+        onClick: () -> Unit
+    ): TextView {
+        return createCircleButton(
+            icon = icon,
+            sizeDp = 52,
+            backgroundColor = Color.WHITE,
+            iconColor = Color.parseColor("#80A867"),
+            iconTextSize = 24f
+        ).apply {
+            elevation = 0f
+
+            setOnClickListener {
+                onClick()
+                toggleMenu()
+            }
+        }
+    }
+
+    private fun createCircleButton(
+        icon: String,
+        sizeDp: Int,
+        backgroundColor: Int,
+        iconColor: Int,
+        iconTextSize: Float
+    ): TextView {
+        return TextView(context).apply {
+            text = icon
+            textSize = iconTextSize
+            setTextColor(iconColor)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            background = createCircleDrawable(backgroundColor)
+            isClickable = true
+            isFocusable = true
+
+            layoutParams = LinearLayout.LayoutParams(
+                dp(sizeDp),
+                dp(sizeDp)
+            ).apply {
+                setMargins(0, dp(6), 0, dp(6))
+            }
+        }
+    }
+
+    private fun createCircleDrawable(color: Int): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke(dp(2), Color.WHITE)
+        }
+    }
+
+    private fun createRoundRectDrawable(
+        color: Int,
+        radiusDp: Int
+    ): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(color)
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * context.resources.displayMetrics.density).toInt()
     }
 }
