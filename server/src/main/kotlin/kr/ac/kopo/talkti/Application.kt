@@ -1,19 +1,15 @@
 package kr.ac.kopo.talkti
 
+import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
 import kr.ac.kopo.talkti.models.ScreenStateRequest
-import kr.ac.kopo.talkti.models.GuideActionResponse
-import kr.ac.kopo.talkti.models.RectDto
-
-// ⭐️ 파일 입출력 및 Base64 디코딩을 위한 패키지 추가
 import java.io.File
 import java.util.Base64
 
@@ -32,6 +28,8 @@ fun Application.module() {
         })
     }
 
+    val analyzeService = AnalyzeService()
+
     routing {
         post("/analyze") {
             val request = call.receive<ScreenStateRequest>()
@@ -40,20 +38,16 @@ fun Application.module() {
 
             println("서버 데이터 수신 성공! 명령: ${request.userVoiceCommand}, sessionId: $sessionId")
 
-            // ==========================================
-            // 📁 1. 저장할 폴더(디렉토리) 생성
-            // ==========================================
             val uploadDir = File("uploads")
             if (!uploadDir.exists()) {
-                uploadDir.mkdirs() // 폴더가 없으면 새로 만듭니다
+                uploadDir.mkdirs()
             }
 
-                        // ==========================================
+            // ==========================================
             // 🖼️ 2. 스크린샷 이미지 (Base64 -> JPG 파일) 저장
             // ==========================================
             request.screenshotBase64?.let { base64String ->
                 try {
-                    // 안드로이드에서 보낸 Base64 문자열을 다시 바이트 배열로 해독
                     val imageBytes = Base64.getDecoder().decode(base64String)
                     val imageFile = File(uploadDir, "screenshot_${sessionId}.jpg")
                     imageFile.writeBytes(imageBytes)
@@ -70,6 +64,8 @@ fun Application.module() {
             uiTreeFile.writeText(request.uiTreeJson)
             println("✅ UI 트리 저장 완료: ${uiTreeFile.absolutePath}")
 
+            val response = analyzeService.analyze(request)
+            call.respond(response)
 
             // 클라이언트에게 돌려줄 모의 응답
             val mockResponse = when {
