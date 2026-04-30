@@ -8,9 +8,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
-import android.util.TypedValue
 import android.widget.TextView
 import kotlin.math.abs
 
@@ -48,19 +46,16 @@ class FloatingMenuManager(
         rootLayout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, 0, 0, 0)
         }
 
-        // 1. 메인 원형 버튼: 기본 ... 아이콘
+        // 1. 메인 원형 버튼
         mainButton = createCircleButton(
             icon = "…",
             sizeDp = 64,
-            backgroundColor = Color.parseColor("#80A867"),
+            backgroundColor = Color.parseColor("#f9e000"),
             iconColor = Color.BLACK,
             iconTextSize = 32f
         ).apply {
-            elevation = 0f
-
             setOnTouchListener(object : View.OnTouchListener {
                 private var initialX = 0
                 private var initialY = 0
@@ -94,6 +89,7 @@ class FloatingMenuManager(
 
                         MotionEvent.ACTION_UP -> {
                             if (!isMoving) {
+                                v.performClick()
                                 toggleMenu()
                             }
                             return true
@@ -128,16 +124,26 @@ class FloatingMenuManager(
         subMenuLayout?.visibility = if (isMenuOpen) View.VISIBLE else View.GONE
     }
 
+    /**
+     * 상태에 따라 메인 버튼의 텍스트와 배경색을 업데이트합니다.
+     * 원형 배경을 유지하기 위해 GradientDrawable의 색상을 변경합니다.
+     */
     fun updateMainButtonStatus(isListening: Boolean) {
         mainButton?.post {
             if (isListening) {
-                mainButton?.text = "듣는 중..."
-                mainButton?.setBackgroundColor(Color.parseColor("#34A853"))
+                mainButton?.text = "듣는 중"
+                mainButton?.textSize = 14f
+                updateCircleColor(mainButton, Color.parseColor("#34A853"))
             } else {
-                mainButton?.text = "똑띠 ▼"
-                mainButton?.setBackgroundColor(Color.parseColor("#FEE500"))
+                mainButton?.text = "…"
+                mainButton?.textSize = 32f
+                updateCircleColor(mainButton, Color.parseColor("#f9e000"))
             }
         }
+    }
+
+    private fun updateCircleColor(view: View?, color: Int) {
+        (view?.background as? GradientDrawable)?.setColor(color)
     }
 
     fun hide() {
@@ -158,8 +164,6 @@ class FloatingMenuManager(
             iconColor = Color.parseColor("#80A867"),
             iconTextSize = 24f
         ).apply {
-            elevation = 0f
-
             setOnClickListener {
                 onClick()
                 toggleMenu()
@@ -198,17 +202,6 @@ class FloatingMenuManager(
             shape = GradientDrawable.OVAL
             setColor(color)
             setStroke(dp(2), Color.WHITE)
-        }
-    }
-
-    private fun createRoundRectDrawable(
-        color: Int,
-        radiusDp: Int
-    ): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(color)
-            cornerRadius = dp(radiusDp).toFloat()
         }
     }
 
