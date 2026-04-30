@@ -9,6 +9,8 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.Json
+import kr.ac.kopo.talkti.models.GuideActionResponse
+import kr.ac.kopo.talkti.models.RectDto
 import kr.ac.kopo.talkti.models.ScreenStateRequest
 import java.io.File
 import java.util.Base64
@@ -43,6 +45,9 @@ fun Application.module() {
                 uploadDir.mkdirs()
             }
 
+            // ==========================================
+            // 🖼️ 2. 스크린샷 이미지 (Base64 -> JPG 파일) 저장
+            // ==========================================
             request.screenshotBase64?.let { base64String ->
                 try {
                     val imageBytes = Base64.getDecoder().decode(base64String)
@@ -54,6 +59,9 @@ fun Application.module() {
                 }
             }
 
+            // ==========================================
+            // 🌳 3. UI 노드 정보 (String -> JSON 파일) 저장
+            // ==========================================
             val uiTreeFile = File(uploadDir, "uitree_${sessionId}.json")
             uiTreeFile.writeText(request.uiTreeJson)
             println("✅ UI 트리 저장 완료: ${uiTreeFile.absolutePath}")
