@@ -1,5 +1,6 @@
 package kr.ac.kopo.talkti.data.parser
 
+import kotlinx.serialization.Serializable
 import kr.ac.kopo.talkti.models.RectDto
 
 /**
@@ -7,6 +8,7 @@ import kr.ac.kopo.talkti.models.RectDto
  */
 class UiNodeParser {
     
+    @Serializable
     data class SimplifiedElement(
         val candidateId: String,
         val interactionText: String, // 텍스트나 설명 중 더 중요한 것
