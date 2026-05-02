@@ -36,6 +36,7 @@ import kr.ac.kopo.talkti.models.ScreenStateRequest
 import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
 import kr.ac.kopo.talkti.models.UiElement
+import io.ktor.serialization.kotlinx.json.*
 
 import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
 

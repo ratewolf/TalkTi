@@ -97,4 +97,6 @@ compose.desktop {
 
 dependencies {
     debugImplementation(libs.compose.uiTooling)
+    implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
 }
