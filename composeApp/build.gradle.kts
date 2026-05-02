@@ -31,6 +31,13 @@ kotlin {
                 implementation(libs.androidx.lifecycle.runtimeCompose)
                 implementation(libs.kotlinx.serialization.json)
                 implementation(projects.shared)
+
+                // Ktor Common Dependencies
+                val ktorVersion = "3.0.1"
+                implementation("io.ktor:ktor-client-core:$ktorVersion")
+                implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
+                implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
+                implementation("io.ktor:ktor-client-logging:$ktorVersion")
             }
         }
         val androidMain by getting {
@@ -43,7 +50,7 @@ kotlin {
         val desktopMain by getting {
             dependencies {
                 implementation(compose.desktop.currentOs)
-                implementation("io.ktor:ktor-client-okhttp:3.0.1")
+                implementation("io.ktor:ktor-client-cio:3.0.1")
             }
         }
         commonTest.dependencies {
@@ -97,6 +104,4 @@ compose.desktop {
 
 dependencies {
     debugImplementation(libs.compose.uiTooling)
-    implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
 }

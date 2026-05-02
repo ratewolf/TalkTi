@@ -5,7 +5,6 @@ import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
-import androidx.annotation.RequiresApi
 import android.graphics.Bitmap
 import android.util.Base64
 import android.view.Display
@@ -15,7 +14,6 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.view.Gravity
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.Toast
 import android.content.Intent
 import android.graphics.Rect
@@ -30,7 +28,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
-import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kr.ac.kopo.talkti.models.ScreenStateRequest
 import kr.ac.kopo.talkti.models.GuideActionResponse
@@ -42,12 +40,9 @@ import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
-    private val TAG = "TalkTiService"
+    private val tag = "TalkTiService"
 
-    // 오버레이 뷰를 관리할 변수
     private var floatingMenuManager: FloatingMenuManager? = null
-
-    // STT (음성 인식) 객체 추가
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
 
@@ -62,7 +57,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.d(TAG, "접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작")
+        Log.d(tag, "접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작")
         initSpeechRecognizer()
         initTextToSpeech()
         setupFloatingMenu()
@@ -73,7 +68,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             context = this,
             onAppGuideClick = { startAppGuide() },
             onTextInputClick = { showTextInputDialog() },
-            onKioskModeClick = { 
+            onKioskModeClick = {
                 Toast.makeText(this, "키오스크 안내 모드는 준비 중입니다.", Toast.LENGTH_SHORT).show()
             },
             onOpenAppClick = {
@@ -98,7 +93,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val editText = EditText(this).apply {
             hint = "예: 카카오톡 보내줘, 택시 불러줘"
         }
-        
+
         val dialog = AlertDialog.Builder(this)
             .setTitle("명령 입력")
             .setMessage("수행할 동작을 텍스트로 입력해주세요.")
@@ -154,7 +149,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun initTextToSpeech() {
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                textToSpeech?.setLanguage(java.util.Locale.KOREAN)
+                textToSpeech?.language = java.util.Locale.KOREAN
             }
         }
     }
@@ -185,7 +180,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
-        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+        val sharedPref = getSharedPreferences("talkti_prefs", MODE_PRIVATE)
         val baseUrl = sharedPref.getString("server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
         val serverUrl = if (baseUrl.endsWith("/")) "${baseUrl}analyze" else "$baseUrl/analyze"
 
@@ -203,11 +198,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
-                    if (isValidGuideResponse(response, screenSessionId)) {
+                    if (isValidGuideResponse(response)) {
                         response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
                     }
                 }
             } catch (e: Exception) {
+                Log.e(tag, "서버 전송 실패", e)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@TalkTiAccessibilityService, "서버 연결 실패", Toast.LENGTH_SHORT).show()
                 }
@@ -219,9 +215,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "talkti_tts")
     }
 
-    private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
-        if (response.actionType == "CLICK" && response.targetBounds == null) return false
-        return true
+    private fun isValidGuideResponse(response: GuideActionResponse): Boolean {
+        return !(response.actionType == "CLICK" && response.targetBounds == null)
     }
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
@@ -276,7 +271,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun showTargetHighlight(bounds: RectDto, message: String) {
         removeTargetHighlight()
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val highlight = android.widget.TextView(this).apply {
             text = message
             setTextColor(Color.BLACK)
@@ -307,8 +302,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun removeTargetHighlight() {
         highlightJob?.cancel()
         highlightView?.let {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            windowManager.removeView(it)
+            val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+            try {
+                windowManager.removeView(it)
+            } catch (e: Exception) {
+                Log.e(tag, "Error removing highlight view", e)
+            }
             highlightView = null
         }
     }
