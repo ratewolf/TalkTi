@@ -18,6 +18,7 @@ import kotlin.math.abs
 class FloatingMenuManager(
     private val context: Context,
     private val onAppGuideClick: () -> Unit,
+    private val onTextInputClick: () -> Unit,
     private val onKioskModeClick: () -> Unit,
     private val onOpenAppClick: () -> Unit
 ) {
@@ -108,6 +109,7 @@ class FloatingMenuManager(
             setPadding(0, 0, 0, dp(8))
 
             addView(createIconMenuItem("🎤") { onAppGuideClick() })
+            addView(createIconMenuItem("⌨️") { onTextInputClick() })
             addView(createIconMenuItem("⚙️") { onOpenAppClick() })
             addView(createIconMenuItem("📖") { onKioskModeClick() })
         }

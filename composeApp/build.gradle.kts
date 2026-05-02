@@ -15,6 +15,8 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_11)
         }
     }
+
+    jvm("desktop")
     
     sourceSets {
         androidMain.dependencies {
@@ -34,6 +36,11 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+        }
+        val desktopMain by getting {
+            dependencies {
+                implementation(compose.desktop.currentOs)
+            }
         }
     }
 }
@@ -62,6 +69,22 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+compose.desktop {
+    application {
+        mainClass = "kr.ac.kopo.talkti.MainKt"
+
+        nativeDistributions {
+            targetFormats(
+                TargetFormat.Dmg,
+                TargetFormat.Msi,
+                TargetFormat.Deb
+            )
+            packageName = "TalkTi"
+            packageVersion = "1.0.0"
+        }
     }
 }
 

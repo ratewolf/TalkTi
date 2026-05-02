@@ -24,6 +24,8 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.widget.EditText
+import android.app.AlertDialog
 import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.http.*
@@ -63,6 +65,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         floatingMenuManager = FloatingMenuManager(
             context = this,
             onAppGuideClick = { startAppGuide() },
+            onTextInputClick = { showTextInputDialog() },
             onKioskModeClick = { 
                 Toast.makeText(this, "키오스크 안내 모드는 준비 중입니다.", Toast.LENGTH_SHORT).show()
             },
@@ -85,6 +88,28 @@ class TalkTiAccessibilityService : AccessibilityService() {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         }
         speechRecognizer?.startListening(intent)
+    }
+
+    private fun showTextInputDialog() {
+        val editText = EditText(this).apply {
+            hint = "예: 카카오톡 보내줘, 택시 불러줘"
+        }
+        
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("명령 입력")
+            .setMessage("수행할 동작을 텍스트로 입력해주세요.")
+            .setView(editText)
+            .setPositiveButton("확인") { _, _ ->
+                val command = editText.text.toString()
+                if (command.isNotBlank()) {
+                    captureScreenForLLM(command)
+                }
+            }
+            .setNegativeButton("취소", null)
+            .create()
+
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
     }
 
     private fun updateButtonStatus(isListening: Boolean) {
@@ -213,7 +238,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
-        val serverUrl = "http://192.168.24.166:8080/analyze"
+        val serverUrl = "http://10.132.109.52:8080/analyze"
 
         CoroutineScope(Dispatchers.IO).launch {
             try {

@@ -17,13 +17,17 @@ kotlin {
     
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.serialization.json)
-            implementation("io.ktor:ktor-client-android:3.3.0")
+            implementation("io.ktor:ktor-client-core:3.3.0")
             implementation("io.ktor:ktor-client-content-negotiation:3.3.0")
             implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
         }
-        commonTest.dependencies {
-            implementation(libs.kotlin.test)
+
+        androidMain.dependencies {
+            implementation("io.ktor:ktor-client-android:3.3.0")
+        }
+
+        jvmMain.dependencies {
+            implementation("io.ktor:ktor-client-cio:3.3.0")
         }
     }
 }

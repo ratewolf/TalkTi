@@ -14,7 +14,7 @@ import java.util.regex.Pattern
  */
 class OllamaClient(
     private val ollamaUrl: String = "http://ollama.aikopo.net:8080/api/generate",
-    private val model: String = "gemma4:31b"
+    private val model: String = "gemma4:26b"
 ) {
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(30)) // 연결 대기 시간을 30초로 증가
