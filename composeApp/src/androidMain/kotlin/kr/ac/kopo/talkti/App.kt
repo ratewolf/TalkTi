@@ -1,5 +1,6 @@
 package kr.ac.kopo.talkti
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,12 +15,19 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api // 추가
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -41,8 +49,16 @@ fun App(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class) // 경고 해결을 위해 추가
 @Composable
 private fun TalkTiHomeScreen(onStartSetupClick: () -> Unit) {
+    val context = LocalContext.current
+    val sharedPref = remember { context.getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE) }
+
+    var serverUrl by remember {
+        mutableStateOf(sharedPref.getString("server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080")
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -72,15 +88,19 @@ private fun TalkTiHomeScreen(onStartSetupClick: () -> Unit) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        Text(
-            text = "카카오맵, 카카오T 같은 앱을 사용할 때\nTalkTi가 화면을 보고 다음 행동을 알려줍니다.",
-            fontSize = 17.sp,
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-            lineHeight = 25.sp
+        OutlinedTextField(
+            value = serverUrl,
+            onValueChange = {
+                serverUrl = it
+                sharedPref.edit().putString("server_url", it).apply()
+            },
+            label = { Text("서버 주소 (IP:Port)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp)
         )
 
-        Spacer(modifier = Modifier.height(36.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         Card(
             modifier = Modifier.fillMaxWidth(),

@@ -238,7 +238,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
-        val serverUrl = "http://10.132.109.52:8080/analyze"
+        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+        val baseUrl = sharedPref.getString("server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
+        val serverUrl = if (baseUrl.endsWith("/")) "${baseUrl}analyze" else "$baseUrl/analyze"
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -269,7 +271,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 Log.e(TAG, "통신 오류: ${e.message}")
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@TalkTiAccessibilityService, "서버 연결 실패", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@TalkTiAccessibilityService, "서버 연결 실패 (URL: $serverUrl)", Toast.LENGTH_SHORT).show()
                 }
             }
         }
