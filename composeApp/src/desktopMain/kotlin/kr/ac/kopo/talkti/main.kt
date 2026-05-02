@@ -6,6 +6,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.http.*
@@ -19,11 +20,16 @@ fun main() = application {
     val screenInspector = remember { ScreenInspector() }
     val scope = rememberCoroutineScope()
 
-    // Desktop용 Ktor 클라이언트
+    // Desktop용 Ktor 클라이언트 (타임아웃 설정 추가)
     val client = remember {
         HttpClient(CIO) {
             install(ContentNegotiation) {
                 json(Json { ignoreUnknownKeys = true })
+            }
+            install(HttpTimeout) {
+                requestTimeoutMillis = 60000
+                connectTimeoutMillis = 10000
+                socketTimeoutMillis = 60000
             }
         }
     }
@@ -45,14 +51,12 @@ fun main() = application {
 
                     scope.launch {
                         try {
-                            // 안드로이드와 동일한 형식으로 서버에 전송
-                            // 서버 주소는 환경에 맞게 수정 필요 (예: http://localhost:8080/analyze)
                             val response = client.post("http://localhost:8080/analyze") {
                                 contentType(ContentType.Application.Json)
                                 setBody(ScreenStateRequest(
                                     userVoiceCommand = "리눅스 화면 분석",
                                     uiTreeJson = uiTreeJson,
-                                    screenshotBase64 = null, // 리눅스 스크린샷 기능은 추후 구현 가능
+                                    screenshotBase64 = null,
                                     screenSessionId = sessionId
                                 ))
                             }

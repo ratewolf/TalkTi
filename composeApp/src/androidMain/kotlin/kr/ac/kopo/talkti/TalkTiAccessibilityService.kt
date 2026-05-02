@@ -35,6 +35,7 @@ import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
 import kr.ac.kopo.talkti.models.UiElement
 import io.ktor.serialization.kotlinx.json.*
+import io.ktor.client.plugins.*
 
 import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
 
@@ -52,6 +53,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
+        }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 60000
+            connectTimeoutMillis = 10000
+            socketTimeoutMillis = 60000
         }
     }
 
