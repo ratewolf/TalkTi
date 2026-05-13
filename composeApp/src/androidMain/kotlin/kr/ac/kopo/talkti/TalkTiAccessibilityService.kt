@@ -167,11 +167,48 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
-        val isAppOpenCmd = cleanCmd.contains("열어줘") || cleanCmd.contains("켜줘") || cleanCmd.contains("실행해")
+        val isAppOpenCmd = cleanCmd.contains("열어줘") || cleanCmd.contains("켜줘") || cleanCmd.contains("실행해") || cleanCmd.contains("실행")
         
         if (!isAppOpenCmd) return false
         
         val pm = packageManager
+        
+        // 1. 한국어 발음 및 별명 매핑 (영어 이름 앱, 별명 등)
+        val aliasMap = mapOf(
+            "유튜브" to "com.google.android.youtube",
+            "카카오맵" to "net.daum.android.map",
+            "카카오택시" to "com.kakao.taxi",
+            "카카오티" to "com.kakao.taxi",
+            "네이버지도" to "com.nhn.android.nmap",
+            "네이버" to "com.nhn.android.search",
+            "크롬" to "com.android.chrome",
+            "인스타그램" to "com.instagram.android",
+            "인스타" to "com.instagram.android",
+            "페이스북" to "com.facebook.katana",
+            "배달의민족" to "com.woowahan.baedal",
+            "배민" to "com.woowahan.baedal",
+            "당근마켓" to "com.towneers.www",
+            "당근" to "com.towneers.www",
+            "쿠팡" to "com.coupang.mobile",
+            "토스" to "viva.republica.toss",
+            "설정" to "com.android.settings",
+            "갤러리" to "com.sec.android.gallery3d",
+            "카메라" to "com.sec.android.app.camera"
+        )
+
+        for ((alias, packageName) in aliasMap) {
+            if (cleanCmd.contains(alias)) {
+                val intent = pm.getLaunchIntentForPackage(packageName)
+                if (intent != null) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    speakTts("${alias}를 실행합니다.")
+                    return true
+                }
+            }
+        }
+
+        // 2. 매핑에 없으면 단말기에 설치된 이름(라벨) 그대로 검색
         val packages = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
         for (appInfo in packages) {
             val appLabel = pm.getApplicationLabel(appInfo).toString()
