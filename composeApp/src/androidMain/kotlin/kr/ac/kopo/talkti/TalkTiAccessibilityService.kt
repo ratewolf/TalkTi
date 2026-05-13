@@ -132,7 +132,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         val userCommand = matches[0]
-                        captureScreenForLLM(userCommand)
+                        if (!processLocalCommand(userCommand)) {
+                            captureScreenForLLM(userCommand)
+                        }
                     }
                     updateButtonStatus(false)
                 }
@@ -162,6 +164,31 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent) {}
 
     override fun onInterrupt() {}
+
+    private fun processLocalCommand(command: String): Boolean {
+        val cleanCmd = command.replace(" ", "").lowercase()
+        val isAppOpenCmd = cleanCmd.contains("열어줘") || cleanCmd.contains("켜줘") || cleanCmd.contains("실행해")
+        
+        if (!isAppOpenCmd) return false
+        
+        val pm = packageManager
+        val packages = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
+        for (appInfo in packages) {
+            val appLabel = pm.getApplicationLabel(appInfo).toString()
+            val cleanLabel = appLabel.replace(" ", "").lowercase()
+            
+            if (cleanLabel.length >= 2 && cleanCmd.contains(cleanLabel)) {
+                val intent = pm.getLaunchIntentForPackage(appInfo.packageName)
+                if (intent != null) {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    speakTts("${appLabel}을 실행합니다.")
+                    return true
+                }
+            }
+        }
+        return false
+    }
 
     fun captureScreenForLLM(userCommand: String) {
         val screenSessionId = "screen_${System.currentTimeMillis()}"
