@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.view.Gravity
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import android.content.Intent
 import android.graphics.Rect
@@ -55,15 +56,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
             json(Json { ignoreUnknownKeys = true })
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 60000
-            connectTimeoutMillis = 10000
-            socketTimeoutMillis = 60000
+            requestTimeoutMillis = 120000 
+            connectTimeoutMillis = 15000  
+            socketTimeoutMillis = 120000  
         }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.d(tag, "접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작")
+        Log.d(tag, "접근성 서비스 연결됨")
         initSpeechRecognizer()
         initTextToSpeech()
         setupFloatingMenu()
@@ -97,17 +98,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun showTextInputDialog() {
         val editText = EditText(this).apply {
-            hint = "예: 카카오톡 보내줘, 택시 불러줘"
+            hint = "예: 카카오톡 보내줘"
         }
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("명령 입력")
-            .setMessage("수행할 동작을 텍스트로 입력해주세요.")
             .setView(editText)
             .setPositiveButton("확인") { _, _ ->
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
-                    captureScreenForLLM(command)
+                    // 1. 키보드 숨기기
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.hideSoftInputFromWindow(editText.windowToken, 0)
+                    
+                    // 2. 다이얼로그와 키보드가 사라질 시간을 벌어줌 (0.6초 대기)
+                    CoroutineScope(Dispatchers.Main).launch {
+                        delay(600) 
+                        captureScreenForLLM(command)
+                    }
                 }
             }
             .setNegativeButton("취소", null)
@@ -124,24 +132,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun initSpeechRecognizer() {
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
             setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    updateButtonStatus(true)
-                    Toast.makeText(this@TalkTiAccessibilityService, "천천히 말씀해 주세요.", Toast.LENGTH_SHORT).show()
-                }
-
+                override fun onReadyForSpeech(params: Bundle?) { updateButtonStatus(true) }
                 override fun onResults(results: Bundle?) {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
-                        val userCommand = matches[0]
-                        captureScreenForLLM(userCommand)
+                        // 음성 인식 결과창이 닫히는 시간을 고려해 약간의 지연 추가
+                        CoroutineScope(Dispatchers.Main).launch {
+                            delay(300)
+                            captureScreenForLLM(matches[0])
+                        }
                     }
                     updateButtonStatus(false)
                 }
-
-                override fun onError(error: Int) {
-                    updateButtonStatus(false)
-                }
-
+                override fun onError(error: Int) { updateButtonStatus(false) }
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(rmsdB: Float) {}
                 override fun onBufferReceived(buffer: ByteArray?) {}
@@ -154,14 +157,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun initTextToSpeech() {
         textToSpeech = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                textToSpeech?.language = java.util.Locale.KOREAN
-            }
+            if (status == TextToSpeech.SUCCESS) textToSpeech?.language = java.util.Locale.KOREAN
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {}
-
     override fun onInterrupt() {}
 
     fun captureScreenForLLM(userCommand: String) {
@@ -179,8 +179,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     }
                     hardwareBuffer.close()
                 }
-
-                override fun onFailure(errorCode: Int) {}
+                override fun onFailure(errorCode: Int) {
+                    Log.e(tag, "화면 캡처 실패: $errorCode")
+                }
             })
         }
     }
@@ -202,17 +203,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     ))
                 }.body()
 
+                Log.d(tag, "서버 응답 수신: ${response.ttsMessage}")
+
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
-                    if (isValidGuideResponse(response)) {
-                        response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
+                    response.targetBounds?.let { 
+                        showTargetHighlight(it, response.ttsMessage) 
                     }
                 }
             } catch (e: Exception) {
                 Log.e(tag, "서버 전송 실패", e)
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@TalkTiAccessibilityService, "서버 연결 실패", Toast.LENGTH_SHORT).show()
-                }
             }
         }
     }
@@ -221,23 +221,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "talkti_tts")
     }
 
-    private fun isValidGuideResponse(response: GuideActionResponse): Boolean {
-        return !(response.actionType == "CLICK" && response.targetBounds == null)
-    }
-
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, outputStream)
         return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        speechRecognizer?.destroy()
-        textToSpeech?.stop()
-        textToSpeech?.shutdown()
-        removeTargetHighlight()
-        floatingMenuManager?.hide()
     }
 
     private fun extractScreenTree(): String {
@@ -250,9 +237,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (node.isVisibleToUser) {
                 val text = node.text?.toString() ?: ""
                 val contentDescription = node.contentDescription?.toString() ?: ""
-                val id = node.viewIdResourceName ?: "no_id"
-                val className = node.className?.toString() ?: "no_class"
-
                 if (text.isNotBlank() || contentDescription.isNotBlank() || node.isClickable) {
                     val rect = Rect()
                     node.getBoundsInScreen(rect)
@@ -260,8 +244,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         candidateId = "candidate_${candidateCounter++}",
                         text = text,
                         contentDescription = contentDescription,
-                        id = id,
-                        className = className,
+                        id = node.viewIdResourceName ?: "no_id",
+                        className = node.className?.toString() ?: "",
                         bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom),
                         clickable = node.isClickable,
                         enabled = node.isEnabled,
@@ -277,31 +261,42 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun showTargetHighlight(bounds: RectDto, message: String) {
         removeTargetHighlight()
+        
+        if (bounds.left >= bounds.right || bounds.top >= bounds.bottom) return
+
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val highlight = android.widget.TextView(this).apply {
-            text = message
+            text = "▼\n$message"
             setTextColor(Color.BLACK)
-            textSize = 18f
-            setBackgroundColor(Color.parseColor("#CCFEE500"))
-            setPadding(24, 16, 24, 16)
+            textSize = 14f
+            setBackgroundColor(Color.parseColor("#EEFEE500"))
+            setPadding(20, 10, 20, 10)
             gravity = Gravity.CENTER
         }
+
         val params = WindowManager.LayoutParams(
-            (bounds.right - bounds.left).coerceAtLeast(160),
-            (bounds.bottom - bounds.top).coerceAtLeast(100),
+            (bounds.right - bounds.left).coerceAtLeast(200),
+            (bounds.bottom - bounds.top).coerceAtLeast(120),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = bounds.left
             y = bounds.top
         }
-        highlightView = highlight
-        windowManager.addView(highlightView, params)
-        highlightJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(5000)
-            removeTargetHighlight()
+
+        try {
+            highlightView = highlight
+            windowManager.addView(highlightView, params)
+            highlightJob = CoroutineScope(Dispatchers.Main).launch {
+                delay(8000)
+                removeTargetHighlight()
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "하이라이트 뷰 추가 에러", e)
         }
     }
 
@@ -311,10 +306,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
             val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             try {
                 windowManager.removeView(it)
-            } catch (e: Exception) {
-                Log.e(tag, "Error removing highlight view", e)
-            }
+            } catch (e: Exception) { }
             highlightView = null
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        speechRecognizer?.destroy()
+        textToSpeech?.shutdown()
+        removeTargetHighlight()
+        floatingMenuManager?.hide()
     }
 }

@@ -20,16 +20,16 @@ fun main() = application {
     val screenInspector = remember { ScreenInspector() }
     val scope = rememberCoroutineScope()
 
-    // Desktop용 Ktor 클라이언트 (타임아웃 설정 추가)
+    // Desktop용 Ktor 클라이언트 (타임아웃 120초로 연장)
     val client = remember {
         HttpClient(CIO) {
             install(ContentNegotiation) {
                 json(Json { ignoreUnknownKeys = true })
             }
             install(HttpTimeout) {
-                requestTimeoutMillis = 60000
-                connectTimeoutMillis = 10000
-                socketTimeoutMillis = 60000
+                requestTimeoutMillis = 120000
+                connectTimeoutMillis = 15000
+                socketTimeoutMillis = 120000
             }
         }
     }
@@ -62,7 +62,11 @@ fun main() = application {
                             }
                             println("서버 응답 상태: ${response.status}")
                         } catch (e: Exception) {
-                            println("서버 전송 실패: ${e.message}")
+                            val errorMsg = when(e) {
+                                is HttpRequestTimeoutException -> "서버 응답 시간 초과 (120초)"
+                                else -> "서버 전송 실패: ${e.message}"
+                            }
+                            println(errorMsg)
                         }
                     }
                 }
