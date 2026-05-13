@@ -29,6 +29,7 @@ import android.app.AlertDialog
 import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.http.*
+import io.ktor.client.plugins.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -44,10 +45,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private val TAG = "TalkTiService"
 
-    // 오버레이 뷰를 관리할 변수
     private var floatingMenuManager: FloatingMenuManager? = null
 
-    // STT (음성 인식) 객체 추가
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
 
@@ -57,6 +56,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
+        }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 60000
+            connectTimeoutMillis = 10000
+            socketTimeoutMillis = 60000
         }
     }
 
@@ -106,7 +110,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .setPositiveButton("확인") { _, _ ->
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
-                    captureScreenForLLM(command)
+                    if (!processLocalCommand(command)) {
+                        captureScreenForLLM(command)
+                    }
                 }
             }
             .setNegativeButton("취소", null)
@@ -173,7 +179,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
         
         val pm = packageManager
         
-        // 1. 한국어 발음 및 별명 매핑 (영어 이름 앱, 별명 등)
         val aliasMap = mapOf(
             "유튜브" to "com.google.android.youtube",
             "카카오맵" to "net.daum.android.map",
@@ -208,7 +213,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. 매핑에 없으면 단말기에 설치된 이름(라벨) 그대로 검색
         val packages = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
         for (appInfo in packages) {
             val appLabel = pm.getApplicationLabel(appInfo).toString()

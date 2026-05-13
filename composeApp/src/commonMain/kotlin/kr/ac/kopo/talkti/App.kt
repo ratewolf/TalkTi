@@ -35,7 +35,7 @@ private fun TalkTiHomeScreen(onStartSetupClick: () -> Unit) {
     val settings = rememberSettings()
 
     var serverUrl by remember {
-        mutableStateOf(settings.getString("server_url", "http://10.0.2.2:8080"))
+        mutableStateOf(settings.getString("server_url", "http://guide.aikopo.net"))
     }
 
     Column(
