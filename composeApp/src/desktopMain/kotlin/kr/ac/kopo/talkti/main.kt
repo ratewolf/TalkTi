@@ -20,6 +20,8 @@ fun main() = application {
     val screenInspector = remember { ScreenInspector() }
     val scope = rememberCoroutineScope()
 
+    val serverBaseUrl = "http://guide.aikopo.net"
+
     // Desktop용 Ktor 클라이언트 (타임아웃 120초로 연장)
     val client = remember {
         HttpClient(CIO) {
@@ -51,7 +53,7 @@ fun main() = application {
 
                     scope.launch {
                         try {
-                            val response = client.post("http://localhost:8080/analyze") {
+                            val response = client.post("$serverBaseUrl/analyze") {
                                 contentType(ContentType.Application.Json)
                                 setBody(ScreenStateRequest(
                                     userVoiceCommand = "리눅스 화면 분석",
