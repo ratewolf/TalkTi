@@ -171,53 +171,82 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    private fun processLocalCommand(command: String): Boolean {
-        val cleanCmd = command.replace(" ", "").lowercase()
-        val isAppOpenCmd = cleanCmd.contains("열어줘") || cleanCmd.contains("켜줘") || cleanCmd.contains("실행해") || cleanCmd.contains("실행")
-        
-        if (!isAppOpenCmd) return false
-        
+    private fun openAppByName(appName: String): Boolean {
+        val cleanCmd = appName.replace(" ", "").lowercase()
         val pm = packageManager
-        
+
         val aliasMap = mapOf(
-            "유튜브" to "com.google.android.youtube",
-            "카카오맵" to "net.daum.android.map",
-            "카카오택시" to "com.kakao.taxi",
-            "카카오티" to "com.kakao.taxi",
-            "네이버지도" to "com.nhn.android.nmap",
-            "네이버" to "com.nhn.android.search",
-            "크롬" to "com.android.chrome",
-            "인스타그램" to "com.instagram.android",
-            "인스타" to "com.instagram.android",
-            "페이스북" to "com.facebook.katana",
-            "배달의민족" to "com.woowahan.baedal",
-            "배민" to "com.woowahan.baedal",
-            "당근마켓" to "com.towneers.www",
-            "당근" to "com.towneers.www",
-            "쿠팡" to "com.coupang.mobile",
-            "토스" to "viva.republica.toss",
-            "설정" to "com.android.settings",
-            "갤러리" to "com.sec.android.gallery3d",
-            "카메라" to "com.sec.android.app.camera"
+            //갤러리
+            "갤러리" to listOf("com.sec.android.gallery3d"),
+            "사진첩" to listOf("com.sec.android.gallery3d"),
+            "사진" to listOf("com.sec.android.gallery3d"),
+            "앨범" to listOf("com.sec.android.gallery3d"),
+            "찍은거" to listOf("com.sec.android.gallery3d"),
+            //지도
+            "지도" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
+            "길찾기" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
+            "네비" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
+            "내비게이션" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
+            "카카오맵" to listOf("net.daum.android.map"),
+            "카카오지도" to listOf("net.daum.android.map"),
+            "네이버지도" to listOf("com.nhn.android.nmap"),
+            "네이버맵" to listOf("com.nhn.android.nmap"),
+            //택시
+            "택시" to listOf("com.kakao.taxi"),
+            "카카오택시" to listOf("com.kakao.taxi"),
+            "카카오티" to listOf("com.kakao.taxi"),
+            "콜택시" to listOf("com.kakao.taxi"),
+            //통신
+            "전화" to listOf("com.samsung.android.dialer"),
+            "통화" to listOf("com.samsung.android.dialer"),
+            "문자" to listOf("com.samsung.android.messaging"),
+            "문자함" to listOf("com.samsung.android.messaging"),
+            "카톡" to listOf("com.kakao.talk"),
+            "카카오톡" to listOf("com.kakao.talk"),
+            //유튜브
+            "유튜브" to listOf("com.google.android.youtube"),
+            "유튭" to listOf("com.google.android.youtube"),
+            //설정
+            "돋보기" to listOf("com.samsung.android.app.magnifier"),
+            "크게보기" to listOf("com.samsung.android.app.magnifier"),
+            "만보기" to listOf("com.sec.android.app.shealth"),
+            "걷기" to listOf("com.sec.android.app.shealth"),
+            "설정" to listOf("com.android.settings"),
+            "톱니바퀴" to listOf("com.android.settings")
         )
 
-        for ((alias, packageName) in aliasMap) {
+        //별칭 검색 및 실행 로직 (리스트 순회 적용)
+        for ((alias, packageList) in aliasMap) {
             if (cleanCmd.contains(alias)) {
-                val intent = pm.getLaunchIntentForPackage(packageName)
-                if (intent != null) {
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(intent)
-                    speakTts("${alias}를 실행합니다.")
-                    return true
+                // 리스트 중에서 실제로 설치된 앱 패키지 하나를 찾습니다.
+                val installedPackage = packageList.firstOrNull { pkg ->
+                    try {
+                        pm.getPackageInfo(pkg, 0)
+                        true
+                    } catch (e: Exception) {
+                        false
+                    }
+                }
+
+                if (installedPackage != null) {
+                    val intent = pm.getLaunchIntentForPackage(installedPackage)
+                    if (intent != null) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        speakTts("${alias}를 실행합니다.")
+                        return true
+                    }
                 }
             }
         }
 
+        //설치된 전체 앱 리스트에서 검색 (별칭에 없는 경우)
         val packages = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
         for (appInfo in packages) {
             val appLabel = pm.getApplicationLabel(appInfo).toString()
             val cleanLabel = appLabel.replace(" ", "").lowercase()
-            
+
+            // 2글자 이상 매칭 시 실행
             if (cleanLabel.length >= 2 && cleanCmd.contains(cleanLabel)) {
                 val intent = pm.getLaunchIntentForPackage(appInfo.packageName)
                 if (intent != null) {
@@ -229,6 +258,17 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
         return false
+    }
+
+    private fun processLocalCommand(command: String): Boolean {
+        val cleanCmd = command.replace(" ", "").lowercase()
+        val isAppOpenCmd =
+            cleanCmd.contains("열어줘") || cleanCmd.contains("켜줘") || cleanCmd.contains("실행해") || cleanCmd.contains(
+                "실행"
+            )
+
+        if (!isAppOpenCmd) return false
+        return openAppByName(cleanCmd)
     }
 
     fun captureScreenForLLM(userCommand: String) {
@@ -271,7 +311,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
-                    if (isValidGuideResponse(response, screenSessionId)) {
+                    if (response.actionType == "OPEN_APP") {
+                        println("OPEN_APP 명령 들어옴")
+                        response.targetCandidateId?.let { appName ->
+                            println("OPEN 할 앱은 " + appName + "입니다.")
+                            openAppByName(appName)
+                        }
+                    } else if (isValidGuideResponse(response, screenSessionId)) {
+                        println("클릭 명령이 아닌 ttsMessage 반환")
                         response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
                     }
                 }
@@ -288,6 +335,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
+        if (response.actionType == "OPEN_APP") return true
         if (response.actionType == "CLICK" && response.targetBounds == null) return false
         return true
     }
