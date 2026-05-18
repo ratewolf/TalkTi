@@ -6,7 +6,7 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.receive
-import io.ktor.server.response.respond
+import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.Json
 import kr.ac.kopo.talkti.backend.service.AnalyzeService
@@ -34,6 +34,9 @@ fun Application.module() {
     val validator = RequestValidator()
 
     routing {
+        get("/") {
+            call.respondText("TalkTi Server is Running!")
+        }
         post("/analyze") {
             val request = call.receive<ScreenStateRequest>()
             

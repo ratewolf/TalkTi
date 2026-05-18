@@ -74,9 +74,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             json(Json { ignoreUnknownKeys = true })
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 60000
-            connectTimeoutMillis = 10000
-            socketTimeoutMillis = 60000
+            requestTimeoutMillis = 90000
+            connectTimeoutMillis = 20000
+            socketTimeoutMillis = 90000
         }
     }
 
@@ -316,8 +316,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
         val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
-        val baseUrl = sharedPref.getString("server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
-        val serverUrl = if (baseUrl.endsWith("/")) "${baseUrl}analyze" else "$baseUrl/analyze"
+        var baseUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
+        
+        baseUrl = baseUrl.trim().removeSuffix("/")
+        if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+            baseUrl = "http://$baseUrl"
+        }
+        
+        val serverUrl = "$baseUrl/analyze"
+
+        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command")
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -331,22 +339,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     ))
                 }.body()
 
+                Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
                     if (response.actionType == "OPEN_APP") {
-                        println("OPEN_APP 명령 들어옴")
-                        response.targetCandidateId?.let { appName ->
-                            println("OPEN 할 앱은 " + appName + "입니다.")
-                            openAppByName(appName)
-                        }
+                        response.targetCandidateId?.let { openAppByName(it) }
                     } else if (isValidGuideResponse(response, screenSessionId)) {
-                        println("클릭 명령이 아닌 ttsMessage 반환")
                         response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
                     }
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@TalkTiAccessibilityService, "서버 연결 실패", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -364,7 +369,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+        // 압축률을 50%로 조정하여 전송 데이터 크기를 대폭 줄임
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 50, outputStream)
         return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
     }
 

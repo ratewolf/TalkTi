@@ -57,7 +57,7 @@ class AnalyzeService(
         return if (rawLlmRes != null) {
             try {
                 val llmRes = json.decodeFromString(LlmResponse.serializer(), rawLlmRes)
-                println("✅ LLM 분석 성공: ${llmRes.ttsMessage} (Target: ${llmRes.candidateId})")
+                println("✅ LLM 분석 성공: ${llmRes.ttsMessage}")
 
                 // LLM이 선택한 candidateId에 해당하는 좌표 찾기
                 val targetCandidate = candidates.find { it.candidateId == llmRes.candidateId }
@@ -71,11 +71,11 @@ class AnalyzeService(
                     screenSessionId = request.screenSessionId
                 )
             } catch (e: Exception) {
-                println("❌ LLM 응답 파싱 실패: ${e.message}")
+                println("❌ LLM 응답 파싱 실패")
                 fallbackResponse(candidates, request)
             }
         } else {
-            println("⚠️ LLM 호출 실패 - Fallback 실행")
+            println("⚠️ LLM 호출 실패")
             fallbackResponse(candidates, request)
         }
     }

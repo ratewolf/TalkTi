@@ -49,7 +49,7 @@ class OllamaClient(
             .uri(URI.create(ollamaUrl))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(json.encodeToString(OllamaRequest.serializer(), requestBody)))
-            .timeout(Duration.ofMinutes(5))
+            .timeout(Duration.ofMinutes(5)) // 다시 5분으로 복구
             .build()
 
         return try {
