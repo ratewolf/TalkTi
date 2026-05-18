@@ -36,6 +36,9 @@ class MainActivity : ComponentActivity() {
                         android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS
                     )
                     startActivity(intent)
+                },
+                onToggleOverlayClick = { enabled ->
+                    TalkTiAccessibilityService.setOverlayVisible(enabled)
                 }
             )
         }

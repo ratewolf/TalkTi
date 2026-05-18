@@ -13,19 +13,19 @@ import android.widget.TextView
 import kotlin.math.abs
 
 /**
- * 앱 파트: 드래그 가능한 플로팅 버튼 및 드롭다운 메뉴 관리
+ * 앱 파트: 드래그 가능한 플로팅 버튼 관리 (마이크 버튼 하나로 통합)
  */
 class FloatingMenuManager(
     private val context: Context,
     private val onAppGuideClick: () -> Unit,
-    private val onTextInputClick: () -> Unit,
-    private val onKioskModeClick: () -> Unit,
-    private val onOpenAppClick: () -> Unit
+    // 아래 인자들은 확장을 대비해 남겨두거나, 당장 필요 없으면 생략 가능하지만 
+    // 기존 호출부와의 호환성을 위해 유지합니다.
+    private val onTextInputClick: () -> Unit = {},
+    private val onKioskModeClick: () -> Unit = {},
+    private val onOpenAppClick: () -> Unit = {}
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var rootLayout: LinearLayout? = null
-    private var subMenuLayout: LinearLayout? = null
-    private var isMenuOpen = false
 
     private val params = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
@@ -49,9 +49,9 @@ class FloatingMenuManager(
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
-        // 1. 메인 원형 버튼
+        // 메인 마이크 버튼
         mainButton = createCircleButton(
-            icon = "…",
+            icon = "🎤",
             sizeDp = 64,
             backgroundColor = Color.parseColor("#f9e000"),
             iconColor = Color.BLACK,
@@ -91,7 +91,7 @@ class FloatingMenuManager(
                         MotionEvent.ACTION_UP -> {
                             if (!isMoving) {
                                 v.performClick()
-                                toggleMenu()
+                                onAppGuideClick() // 바로 마이크 기능 실행
                             }
                             return true
                         }
@@ -101,35 +101,10 @@ class FloatingMenuManager(
             })
         }
 
-        // 2. 서브 메뉴 레이아웃
-        subMenuLayout = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            visibility = View.GONE
-            setPadding(0, 0, 0, dp(8))
-
-            addView(createIconMenuItem("🎤") { onAppGuideClick() })
-            addView(createIconMenuItem("⌨️") { onTextInputClick() })
-            addView(createIconMenuItem("⚙️") { onOpenAppClick() })
-            addView(createIconMenuItem("📖") { onKioskModeClick() })
-        }
-
-        // 메뉴가 위에 뜨고, 메인 버튼이 아래에 오도록 추가
-        rootLayout?.addView(subMenuLayout)
         rootLayout?.addView(mainButton)
-
         windowManager.addView(rootLayout, params)
     }
 
-    private fun toggleMenu() {
-        isMenuOpen = !isMenuOpen
-        subMenuLayout?.visibility = if (isMenuOpen) View.VISIBLE else View.GONE
-    }
-
-    /**
-     * 상태에 따라 메인 버튼의 텍스트와 배경색을 업데이트합니다.
-     * 원형 배경을 유지하기 위해 GradientDrawable의 색상을 변경합니다.
-     */
     fun updateMainButtonStatus(isListening: Boolean) {
         mainButton?.post {
             if (isListening) {
@@ -137,7 +112,7 @@ class FloatingMenuManager(
                 mainButton?.textSize = 14f
                 updateCircleColor(mainButton, Color.parseColor("#34A853"))
             } else {
-                mainButton?.text = "…"
+                mainButton?.text = "🎤"
                 mainButton?.textSize = 32f
                 updateCircleColor(mainButton, Color.parseColor("#f9e000"))
             }
@@ -150,26 +125,11 @@ class FloatingMenuManager(
 
     fun hide() {
         rootLayout?.let {
-            windowManager.removeView(it)
-            rootLayout = null
-        }
-    }
-
-    private fun createIconMenuItem(
-        icon: String,
-        onClick: () -> Unit
-    ): TextView {
-        return createCircleButton(
-            icon = icon,
-            sizeDp = 52,
-            backgroundColor = Color.WHITE,
-            iconColor = Color.parseColor("#80A867"),
-            iconTextSize = 24f
-        ).apply {
-            setOnClickListener {
-                onClick()
-                toggleMenu()
+            try {
+                windowManager.removeView(it)
+            } catch (e: Exception) {
             }
+            rootLayout = null
         }
     }
 

@@ -20,22 +20,31 @@ private val TextSecondary = Color(0xFF5F6368)
 
 @Composable
 fun App(
-    onStartSetupClick: () -> Unit = {}
+    onStartSetupClick: () -> Unit = {},
+    onToggleOverlayClick: (Boolean) -> Unit = {}
 ) {
     MaterialTheme {
         TalkTiHomeScreen(
-            onStartSetupClick = onStartSetupClick
+            onStartSetupClick = onStartSetupClick,
+            onToggleOverlayClick = onToggleOverlayClick
         )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TalkTiHomeScreen(onStartSetupClick: () -> Unit) {
+private fun TalkTiHomeScreen(
+    onStartSetupClick: () -> Unit,
+    onToggleOverlayClick: (Boolean) -> Unit
+) {
     val settings = rememberSettings()
 
     var serverUrl by remember {
         mutableStateOf(settings.getString("server_url", "http://guide.aikopo.net"))
+    }
+
+    var isOverlayEnabled by remember {
+        mutableStateOf(settings.getBoolean("overlay_enabled", true))
     }
 
     Column(
@@ -109,6 +118,30 @@ private fun TalkTiHomeScreen(onStartSetupClick: () -> Unit) {
         }
 
         Spacer(modifier = Modifier.height(28.dp))
+
+        Button(
+            onClick = {
+                isOverlayEnabled = !isOverlayEnabled
+                settings.putBoolean("overlay_enabled", isOverlayEnabled)
+                onToggleOverlayClick(isOverlayEnabled)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(68.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isOverlayEnabled) Color.Gray else KakaoYellow,
+                contentColor = Color.Black
+            )
+        ) {
+            Text(
+                text = if (isOverlayEnabled) "오버레이 끄기" else "오버레이 켜기",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         Button(
             onClick = onStartSetupClick,

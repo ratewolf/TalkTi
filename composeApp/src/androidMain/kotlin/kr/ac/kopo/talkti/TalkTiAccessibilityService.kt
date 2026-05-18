@@ -43,6 +43,22 @@ import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
+    companion object {
+        private var instance: TalkTiAccessibilityService? = null
+
+        fun setOverlayVisible(visible: Boolean) {
+            instance?.let {
+                if (visible) {
+                    it.floatingMenuManager?.show()
+                } else {
+                    it.floatingMenuManager?.hide()
+                }
+            }
+        }
+
+        fun isServiceRunning(): Boolean = instance != null
+    }
+
     private val TAG = "TalkTiService"
 
     private var floatingMenuManager: FloatingMenuManager? = null
@@ -66,6 +82,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         Log.d(TAG, "접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작")
         initSpeechRecognizer()
         initTextToSpeech()
@@ -86,7 +103,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 startActivity(intent)
             }
         )
-        floatingMenuManager?.show()
+        
+        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+        val isEnabled = sharedPref.getBoolean("overlay_enabled", true)
+        if (isEnabled) {
+            floatingMenuManager?.show()
+        }
     }
 
     private fun startAppGuide() {
@@ -348,6 +370,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        instance = null
         speechRecognizer?.destroy()
         textToSpeech?.stop()
         textToSpeech?.shutdown()
@@ -393,17 +416,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun showTargetHighlight(bounds: RectDto, message: String) {
         removeTargetHighlight()
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val highlight = android.widget.TextView(this).apply {
-            text = message
-            setTextColor(Color.BLACK)
-            textSize = 18f
-            setBackgroundColor(Color.parseColor("#CCFEE500"))
-            setPadding(24, 16, 24, 16)
-            gravity = Gravity.CENTER
+        
+        // 빨간색 박스(테두리)만 표시하도록 변경
+        val highlight = android.view.View(this).apply {
+            val strokeWidth = (4 * resources.displayMetrics.density).toInt()
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setStroke(strokeWidth, Color.RED)
+                setColor(Color.TRANSPARENT)
+            }
         }
+
         val params = WindowManager.LayoutParams(
-            (bounds.right - bounds.left).coerceAtLeast(160),
-            (bounds.bottom - bounds.top).coerceAtLeast(100),
+            (bounds.right - bounds.left).coerceAtLeast(10),
+            (bounds.bottom - bounds.top).coerceAtLeast(10),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
@@ -414,6 +439,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         highlightView = highlight
         windowManager.addView(highlightView, params)
+
         highlightJob = CoroutineScope(Dispatchers.Main).launch {
             delay(5000)
             removeTargetHighlight()

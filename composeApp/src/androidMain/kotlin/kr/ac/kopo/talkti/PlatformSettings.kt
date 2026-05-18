@@ -14,6 +14,13 @@ actual class PlatformSettings(private val context: Context) {
     actual fun putString(key: String, value: String) {
         prefs.edit().putString(key, value).apply()
     }
+
+    actual fun getBoolean(key: String, defaultValue: Boolean): Boolean =
+        prefs.getBoolean(key, defaultValue)
+
+    actual fun putBoolean(key: String, value: Boolean) {
+        prefs.edit().putBoolean(key, value).apply()
+    }
 }
 
 @Composable
