@@ -1,0 +1,90 @@
+--------- beginning of main
+05-19 14:19:31.013 27577 27577 I System.out: 즉시 자동 클릭 실행
+05-19 14:22:00.327  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:22:00.327  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:22:00.327  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:22:00.327  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:22:00.327  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:22:00.327  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:22:00.327  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:22:00.327  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:22:00.327  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:22:00.327  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+05-19 14:22:00.643 29824 29824 W System.err: SLF4J(W): No SLF4J providers were found.
+05-19 14:22:00.643 29824 29824 W System.err: SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+05-19 14:22:00.643 29824 29824 W System.err: SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+05-19 14:22:00.753 29824 29824 D TalkTiService: 접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작
+05-19 14:23:18.698  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:23:18.698  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:23:18.698  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:23:18.698  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:23:18.698  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:23:18.698  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:23:18.698  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:23:18.698  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:23:18.698  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:23:18.698  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+05-19 14:23:26.822 29824 29824 D TalkTiService: 접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작
+05-19 14:23:32.542  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:23:32.542  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:23:32.542  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:23:32.542  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:23:32.542  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:23:32.542  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:23:32.542  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:23:32.542  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:23:32.542  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:23:32.542  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+05-19 14:24:22.717 29824 29824 I System.out: 즉시 자동 텍스트 입력 실행: 삼성병원
+05-19 14:24:22.737 29824 29824 I System.out: 즉시 입력 실패, 노란색 가이드로 우회합니다.
+05-19 14:28:25.840 31511 31511 W System.err: SLF4J(W): No SLF4J providers were found.
+05-19 14:28:25.840 31511 31511 W System.err: SLF4J(W): Defaulting to no-operation (NOP) logger implementation
+05-19 14:28:25.840 31511 31511 W System.err: SLF4J(W): See https://www.slf4j.org/codes.html#noProviders for further details.
+05-19 14:28:25.911 31511 31511 D TalkTiService: 접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작
+05-19 14:28:27.230  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:28:27.230  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:28:27.230  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:28:27.230  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:28:27.230  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:28:27.230  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:28:27.230  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:28:27.230  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:28:27.230  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:28:27.230  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+05-19 14:29:27.362  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:29:27.362  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:29:27.362  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:29:27.362  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:29:27.362  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:29:27.362  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:29:27.362  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:29:27.362  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:29:27.362  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:29:27.362  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+05-19 14:29:34.411 31511 31511 D TalkTiService: 접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작
+05-19 14:29:37.194  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:29:37.194  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:29:37.194  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:29:37.194  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:29:37.194  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:29:37.194  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:29:37.194  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:29:37.195  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:29:37.195  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:29:37.195  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+05-19 14:30:09.238 31511 31511 I System.out: 즉시 자동 클릭 실행
+05-19 14:30:09.238 31511 31511 I System.out: 화면 전환 대기 목적지 설정: 삼성병원
+05-19 14:37:54.703 31511 31511 I System.out: 즉시 자동 클릭 실행
+05-19 14:37:54.703 31511 31511 I System.out: 화면 전환 대기 목적지 설정: 강남역
+05-19 14:39:03.046 31511 31511 I System.out: 즉시 자동 클릭 실행
+05-19 14:39:03.046 31511 31511 I System.out: 화면 전환 대기 목적지 설정: 강남역
+05-19 14:51:47.180  1240  6307 W System.err: java.io.FileNotFoundException: https://play.google.com/store/apps/details?id=kr.ac.kopo.talkti&hl=en
+05-19 14:51:47.181  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpURLConnectionImpl.getInputStream(HttpURLConnectionImpl.java:255)
+05-19 14:51:47.181  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.DelegatingHttpsURLConnection.getInputStream(DelegatingHttpsURLConnection.java:211)
+05-19 14:51:47.181  1240  6307 W System.err: 	at com.android.okhttp.internal.huc.HttpsURLConnectionImpl.getInputStream(HttpsURLConnectionImpl.java:30)
+05-19 14:51:47.181  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerUtils.getApplicationCategory(SemWifiTransportLayerUtils.java:104)
+05-19 14:51:47.181  1240  6307 W System.err: 	at com.samsung.android.server.wifi.tcp.SemWifiTransportLayerMonitor$TcpMonitorHandler.handleMessage(SemWifiTransportLayerMonitor.java:244)
+05-19 14:51:47.181  1240  6307 W System.err: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+05-19 14:51:47.181  1240  6307 W System.err: 	at android.os.Looper.loopOnce(Looper.java:226)
+05-19 14:51:47.181  1240  6307 W System.err: 	at android.os.Looper.loop(Looper.java:313)
+05-19 14:51:47.181  1240  6307 W System.err: 	at android.os.HandlerThread.run(HandlerThread.java:67)

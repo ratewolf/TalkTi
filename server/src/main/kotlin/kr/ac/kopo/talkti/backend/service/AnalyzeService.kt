@@ -33,6 +33,7 @@ class AnalyzeService(
     private data class LlmResponse(
         val candidateId: String? = null,
         val actionType: String,
+        val arguments: String? = null,
         val ttsMessage: String,
         val confidence: Double = 0.0
     )
@@ -47,16 +48,27 @@ class AnalyzeService(
         val simplifiedJson = Json.encodeToString(simplifiedElements)
 
         // 2. 프롬프트 생성 및 LLM 호출
-        val systemPrompt = PromptTemplates.ANALYZE_UI_SYSTEM_PROMPT
-        val userPrompt = PromptTemplates.buildUserPrompt(request.userVoiceCommand, simplifiedJson)
-        val combinedPrompt = "$systemPrompt\n\n$userPrompt"
+        val combinedPrompt = PromptTemplates.buildScreenAnalyzePrompt(
+            currentIntent = request.userVoiceCommand,
+            historyText = "이전 대화 없음", // 필요 시 DB 연동
+            uiElementsJson = simplifiedJson
+        )
 
         println("--- LLM 호출 시작 ---")
         val rawLlmRes = ollamaClient.generate(combinedPrompt, request.screenshotBase64)
         
         return if (rawLlmRes != null) {
             try {
-                val llmRes = json.decodeFromString(LlmResponse.serializer(), rawLlmRes)
+                // LLM이 덧붙인 불필요한 텍스트나 마크다운을 제거하고 순수 JSON 객체 부분만 추출
+                val startIndex = rawLlmRes.indexOf('{')
+                val endIndex = rawLlmRes.lastIndexOf('}')
+                val cleanJson = if (startIndex != -1 && endIndex != -1 && startIndex <= endIndex) {
+                    rawLlmRes.substring(startIndex, endIndex + 1)
+                } else {
+                    rawLlmRes
+                }
+
+                val llmRes = json.decodeFromString(LlmResponse.serializer(), cleanJson)
                 println("✅ LLM 분석 성공: ${llmRes.ttsMessage} (Target: ${llmRes.candidateId})")
 
                 // LLM이 선택한 candidateId에 해당하는 좌표 찾기
@@ -67,6 +79,7 @@ class AnalyzeService(
                     targetBounds = targetCandidate?.bounds,
                     ttsMessage = llmRes.ttsMessage,
                     targetCandidateId = llmRes.candidateId,
+                    actionArguments = llmRes.arguments,
                     confidence = llmRes.confidence,
                     screenSessionId = request.screenSessionId
                 )

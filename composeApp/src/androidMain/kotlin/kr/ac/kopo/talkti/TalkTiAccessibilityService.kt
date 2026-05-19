@@ -52,6 +52,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private var highlightView: android.view.View? = null
     private var highlightJob: Job? = null
+    private var pendingCommand: String? = null
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -167,7 +168,28 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val command = pendingCommand
+        if (command != null && (
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        )) {
+            println("📡 [이벤트 감지] 타입: ${event.eventType}, 현재 대기 목적지: $command")
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(600) // 새로운 화면이 완전히 그려질 시간 대기
+                val currentCmd = pendingCommand
+                if (currentCmd != null) {
+                    val success = autofillEditTextInActiveWindow(currentCmd)
+                    if (success) {
+                        pendingCommand = null // 타이핑 성공 시 대기 큐에서 제거
+                        speakTts("${currentCmd}을 입력했습니다.")
+                    } else {
+                        println("❌ [매크로 대기] 입력창 검색 실패. 다음 변경 이벤트를 기다립니다.")
+                    }
+                }
+            }
+        }
+    }
 
     override fun onInterrupt() {}
 
@@ -293,8 +315,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
-        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
-        val baseUrl = sharedPref.getString("server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
+        val baseUrl = "http://127.0.0.1:8080"
         val serverUrl = if (baseUrl.endsWith("/")) "${baseUrl}analyze" else "$baseUrl/analyze"
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -316,6 +337,37 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         response.targetCandidateId?.let { appName ->
                             println("OPEN 할 앱은 " + appName + "입니다.")
                             openAppByName(appName)
+                        }
+                    } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
+                        println("즉시 자동 텍스트 입력 실행: ${response.actionArguments}")
+                        response.targetBounds?.let { bounds ->
+                            val success = performImmediateActionSetText(bounds, response.actionArguments!!)
+                            if (!success) {
+                                println("즉시 입력 실패! 가짜 입력창으로 판단되어 자동 클릭 및 매크로 대기열을 가동합니다.")
+                                pendingCommand = response.actionArguments!!
+                                val clickSuccess = performImmediateActionClick(bounds)
+                                if (!clickSuccess) {
+                                    println("클릭 우회마저 실패하여 노란색 가이드로 우회합니다.")
+                                    showTargetHighlight(bounds, response.ttsMessage)
+                                }
+                            }
+                        }
+                    } else if (response.actionType == "CLICK") {
+                        println("즉시 자동 클릭 실행")
+                        val targetText = if (!response.actionArguments.isNullOrBlank()) {
+                            response.actionArguments!!
+                        } else {
+                            cleanSearchQuery(command)
+                        }
+                        pendingCommand = targetText
+                        println("화면 전환 대기 목적지 설정: $targetText")
+
+                        response.targetBounds?.let { bounds ->
+                            val success = performImmediateActionClick(bounds)
+                            if (!success) {
+                                println("즉시 클릭 실패, 노란색 가이드로 우회합니다.")
+                                showTargetHighlight(bounds, response.ttsMessage)
+                            }
                         }
                     } else if (isValidGuideResponse(response, screenSessionId)) {
                         println("클릭 명령이 아닌 ttsMessage 반환")
@@ -427,5 +479,125 @@ class TalkTiAccessibilityService : AccessibilityService() {
             windowManager.removeView(it)
             highlightView = null
         }
+    }
+
+    private fun performImmediateActionSetText(bounds: RectDto, text: String): Boolean {
+        val rootNode = rootInActiveWindow ?: return false
+        var success = false
+
+        fun traverse(node: AccessibilityNodeInfo?) {
+            if (node == null || success) return
+            if (node.isVisibleToUser) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                
+                // 50픽셀 오차범위 내 좌표 보정 매칭
+                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                    val arguments = Bundle().apply {
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                    }
+                    success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                    if (success) return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                traverse(node.getChild(i))
+            }
+        }
+
+        traverse(rootNode)
+        return success
+    }
+
+    private fun performImmediateActionClick(bounds: RectDto): Boolean {
+        val rootNode = rootInActiveWindow ?: return false
+        var success = false
+
+        fun traverse(node: AccessibilityNodeInfo?) {
+            if (node == null || success) return
+            if (node.isVisibleToUser) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+
+                // 50픽셀 오차범위 내 좌표 보정 매칭
+                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                    var current = node
+                    while (current != null) {
+                        if (current.isClickable) {
+                            success = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            if (success) break
+                        }
+                        current = current.parent
+                    }
+                    return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                traverse(node.getChild(i))
+            }
+        }
+
+        traverse(rootNode)
+        return success
+    }
+
+    private fun autofillEditTextInActiveWindow(text: String): Boolean {
+        var success = false
+
+        fun traverse(node: AccessibilityNodeInfo?) {
+            if (node == null || success) return
+            if (node.isVisibleToUser) {
+                val className = node.className?.toString() ?: ""
+                val isEdit = className.contains("EditText") || className.contains("AutoCompleteTextView") || node.isEditable
+                if (isEdit) {
+                    println("🎯 [매크로 타겟 발견] 클래스명: $className, 텍스트('$text') 주입 시도")
+                    val arguments = Bundle().apply {
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                    }
+                    success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                    if (success) {
+                        println("✅ [텍스트 입력 성공] 타이핑 완료!")
+                        return
+                    }
+                }
+            }
+            for (i in 0 until node.childCount) {
+                traverse(node.getChild(i))
+            }
+        }
+
+        // 1. 모든 가용한 윈도우(인터랙티브 레이어)를 완전 순회
+        val activeWindows = windows
+        println("🔍 [매크로 스캔] 현재 상호작용 가능한 윈도우 개수: ${activeWindows.size}개")
+        for (window in activeWindows) {
+            if (success) break
+            val root = window.root
+            if (root != null) {
+                traverse(root)
+            }
+        }
+
+        // 2. 만약 윈도우 순회에서 실패했다면 rootInActiveWindow로 최종 폴백
+        if (!success) {
+            println("⚠️ [매크로 스캔 폴백] 활성 윈도우에서 탐색 실패, rootInActiveWindow 개시")
+            val rootNode = rootInActiveWindow
+            if (rootNode != null) {
+                traverse(rootNode)
+            }
+        }
+
+        return success
+    }
+
+    private fun cleanSearchQuery(command: String): String {
+        return command
+            .replace("택시 타고", "")
+            .replace("택시 불러줘", "")
+            .replace("길찾기", "")
+            .replace("검색해줘", "")
+            .replace("가줘", "")
+            .replace("갈래", "")
+            .replace("가자", "")
+            .trim()
     }
 }
