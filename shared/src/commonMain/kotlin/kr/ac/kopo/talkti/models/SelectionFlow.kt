@@ -27,10 +27,10 @@ sealed class SelectionFlow {
         val session: SelectionSession
     ) : SelectionFlow()
 
-    /** 사용자가 옵션을 선택하고 확정한 최종 상태 */
+    /** 사용자가 옵션을 선택하고 오버레이 표시 대상으로 사용됨 */
     data class Resolved(
         val session: SelectionSession,
-        val selected: Option
+        val selected: Candidate
     ) : SelectionFlow()
 
     /** 사용자가 취소했거나 타임아웃 등으로 흐름이 중단된 상태 */
