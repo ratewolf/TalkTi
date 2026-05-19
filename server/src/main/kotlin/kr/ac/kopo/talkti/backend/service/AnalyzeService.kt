@@ -6,6 +6,7 @@ import kotlinx.serialization.json.*
 import kr.ac.kopo.talkti.backend.service.llm.OllamaClient
 import kr.ac.kopo.talkti.data.parser.UiNodeParser
 import kr.ac.kopo.talkti.llm.prompt.PromptTemplates
+import kr.ac.kopo.talkti.models.AppInfo
 import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
 import kr.ac.kopo.talkti.models.ScreenStateRequest
@@ -45,10 +46,11 @@ class AnalyzeService(
             nodeParser.simplifyForLlm(it.candidateId, it.text, it.contentDesc, it.className, it.bounds)
         }
         val simplifiedJson = Json.encodeToString(simplifiedElements)
+        val installedAppsJson = Json.encodeToString(request.installedApps ?: emptyList<AppInfo>())
 
         // 2. 프롬프트 생성 및 LLM 호출
         val systemPrompt = PromptTemplates.ANALYZE_UI_SYSTEM_PROMPT
-        val userPrompt = PromptTemplates.buildUserPrompt(request.userVoiceCommand, simplifiedJson)
+        val userPrompt = PromptTemplates.buildUserPrompt(request.userVoiceCommand, simplifiedJson, installedAppsJson)
         val combinedPrompt = "$systemPrompt\n\n$userPrompt"
 
         println("--- LLM 호출 시작 ---")

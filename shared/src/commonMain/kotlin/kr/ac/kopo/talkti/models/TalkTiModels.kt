@@ -16,11 +16,18 @@ data class UiElement(
 )
 
 @Serializable
+data class AppInfo(
+    val appLabel: String,
+    val packageName: String
+)
+
+@Serializable
 data class ScreenStateRequest(
     val userVoiceCommand: String,
     val uiTreeJson: String,
     val screenshotBase64: String? = null,
-    val screenSessionId: String? = null
+    val screenSessionId: String? = null,
+    val installedApps: List<AppInfo>? = null
 )
 
 @Serializable
