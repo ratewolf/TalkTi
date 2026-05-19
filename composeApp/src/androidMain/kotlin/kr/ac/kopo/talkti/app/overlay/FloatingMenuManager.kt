@@ -8,8 +8,11 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.Animation
+import android.view.animation.ScaleAnimation
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.TextView
+import kr.ac.kopo.talkti.R
 import kotlin.math.abs
 
 /**
@@ -39,7 +42,7 @@ class FloatingMenuManager(
         y = 300
     }
 
-    private var mainButton: TextView? = null
+    private var mainButton: ImageView? = null
 
     fun show() {
         if (rootLayout != null) return
@@ -47,15 +50,17 @@ class FloatingMenuManager(
         rootLayout = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            // 그림자가 잘 보이도록 패딩 추가
+            val padding = dp(8)
+            setPadding(padding, padding, padding, padding)
         }
 
         // 메인 마이크 버튼
         mainButton = createCircleButton(
-            icon = "🎤",
-            sizeDp = 64,
-            backgroundColor = Color.parseColor("#f9e000"),
-            iconColor = Color.BLACK,
-            iconTextSize = 32f
+            iconRes = R.drawable.ic_mic,
+            sizeDp = 60,
+            backgroundColor = Color.parseColor("#FFE000"), // 카카오 느낌의 노란색
+            iconTint = Color.BLACK
         ).apply {
             setOnTouchListener(object : View.OnTouchListener {
                 private var initialX = 0
@@ -72,6 +77,7 @@ class FloatingMenuManager(
                             initialTouchX = event.rawX
                             initialTouchY = event.rawY
                             isMoving = false
+                            v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(100).start()
                             return true
                         }
 
@@ -89,10 +95,15 @@ class FloatingMenuManager(
                         }
 
                         MotionEvent.ACTION_UP -> {
+                            v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(100).start()
                             if (!isMoving) {
                                 v.performClick()
-                                onAppGuideClick() // 바로 마이크 기능 실행
+                                onAppGuideClick() 
                             }
+                            return true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(100).start()
                             return true
                         }
                     }
@@ -105,16 +116,29 @@ class FloatingMenuManager(
         windowManager.addView(rootLayout, params)
     }
 
+    private var pulseAnimation: Animation? = null
+
     fun updateMainButtonStatus(isListening: Boolean) {
         mainButton?.post {
             if (isListening) {
-                mainButton?.text = "듣는 중"
-                mainButton?.textSize = 14f
-                updateCircleColor(mainButton, Color.parseColor("#34A853"))
+                updateCircleColor(mainButton, Color.parseColor("#FF5252")) // 빨간색으로 변경
+                mainButton?.setColorFilter(Color.WHITE)
+                
+                // 펄스 애니메이션 시작
+                pulseAnimation = ScaleAnimation(
+                    1.0f, 1.2f, 1.0f, 1.2f,
+                    Animation.RELATIVE_TO_SELF, 0.5f,
+                    Animation.RELATIVE_TO_SELF, 0.5f
+                ).apply {
+                    duration = 500
+                    repeatMode = Animation.REVERSE
+                    repeatCount = Animation.INFINITE
+                }
+                mainButton?.startAnimation(pulseAnimation)
             } else {
-                mainButton?.text = "🎤"
-                mainButton?.textSize = 32f
-                updateCircleColor(mainButton, Color.parseColor("#f9e000"))
+                mainButton?.clearAnimation()
+                updateCircleColor(mainButton, Color.parseColor("#FFE000"))
+                mainButton?.setColorFilter(Color.BLACK)
             }
         }
     }
@@ -134,28 +158,28 @@ class FloatingMenuManager(
     }
 
     private fun createCircleButton(
-        icon: String,
+        iconRes: Int,
         sizeDp: Int,
         backgroundColor: Int,
-        iconColor: Int,
-        iconTextSize: Float
-    ): TextView {
-        return TextView(context).apply {
-            text = icon
-            textSize = iconTextSize
-            setTextColor(iconColor)
-            gravity = Gravity.CENTER
-            includeFontPadding = false
+        iconTint: Int
+    ): ImageView {
+        return ImageView(context).apply {
+            setImageResource(iconRes)
+            setColorFilter(iconTint)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            
+            val padding = dp(16)
+            setPadding(padding, padding, padding, padding)
+            
             background = createCircleDrawable(backgroundColor)
+            
             isClickable = true
             isFocusable = true
 
             layoutParams = LinearLayout.LayoutParams(
                 dp(sizeDp),
                 dp(sizeDp)
-            ).apply {
-                setMargins(0, dp(6), 0, dp(6))
-            }
+            )
         }
     }
 

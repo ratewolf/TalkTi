@@ -25,21 +25,25 @@ object PromptTemplates {
         
         새로운 앱을 실행해야 할 경우:
         {
-          "candidateId": "실행할 앱의 한글 이름 (예: 카카오택시, 유튜브, 네이버지도)",
+          "candidateId": "제공된 설치된 앱 리스트 중 가장 적합한 앱의 packageName (예: com.kakao.talk)",
           "actionType": "OPEN_APP",
           "ttsMessage": "앱을 실행하겠다는 친절한 안내 문구",
           "confidence": 1.0
         }
     """
     
-    fun buildUserPrompt(command: String, simplifiedNodesJson: String): String {
+    fun buildUserPrompt(command: String, simplifiedNodesJson: String, installedAppsJson: String): String {
         return """
             사용자 음성 명령: "$command"
             
-            현재 화면 UI 요소 리스트:
+            [현재 화면 UI 요소 리스트]
             $simplifiedNodesJson
             
-            위 정보를 바탕으로 최적의 Guide Action을 결정해 주세요.
+            [스마트폰에 설치된 실행 가능한 앱 리스트]
+            $installedAppsJson
+            
+            위 정보를 바탕으로 최적의 Guide Action을 결정해 주세요. 
+            만약 사용자가 특정 앱을 열어달라고 하면 [설치된 앱 리스트]에서 가장 유사한 앱의 packageName을 찾아 candidateId로 반환하세요.
         """.trimIndent()
     }
 }

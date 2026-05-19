@@ -33,6 +33,7 @@ import io.ktor.client.plugins.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kr.ac.kopo.talkti.models.AppInfo
 import kr.ac.kopo.talkti.models.ScreenStateRequest
 import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
@@ -193,9 +194,25 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    private fun openAppByName(appName: String): Boolean {
-        val cleanCmd = appName.replace(" ", "").lowercase()
+    private fun openAppByName(appNameOrPackage: String): Boolean {
         val pm = packageManager
+        Log.d(TAG, "openAppByName 호출: $appNameOrPackage")
+
+        // 1. 패키지명으로 직접 실행 시도 (LLM이 패키지명을 보낸 경우)
+        try {
+            val intent = pm.getLaunchIntentForPackage(appNameOrPackage)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                val appLabel = pm.getApplicationLabel(pm.getApplicationInfo(appNameOrPackage, 0))
+                speakTts("${appLabel} 앱을 실행합니다.")
+                return true
+            }
+        } catch (e: Exception) {
+            // 패키지명이 아닌 경우 아래의 검색 로직으로 진행
+        }
+
+        val cleanCmd = appNameOrPackage.replace(" ", "").lowercase()
 
         val aliasMap = mapOf(
             //갤러리
@@ -225,6 +242,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "문자함" to listOf("com.samsung.android.messaging"),
             "카톡" to listOf("com.kakao.talk"),
             "카카오톡" to listOf("com.kakao.talk"),
+            "네이버" to listOf("com.nhn.android.search", "com.nhn.android.nmap"),
             //유튜브
             "유튜브" to listOf("com.google.android.youtube"),
             "유튭" to listOf("com.google.android.youtube"),
@@ -237,9 +255,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "톱니바퀴" to listOf("com.android.settings")
         )
 
-        //별칭 검색 및 실행 로직 (리스트 순회 적용)
+        //별칭 검색 및 실행 로직 (양방향 매칭 적용)
         for ((alias, packageList) in aliasMap) {
-            if (cleanCmd.contains(alias)) {
+            if (cleanCmd.contains(alias) || alias.contains(cleanCmd)) {
                 // 리스트 중에서 실제로 설치된 앱 패키지 하나를 찾습니다.
                 val installedPackage = packageList.firstOrNull { pkg ->
                     try {
@@ -268,8 +286,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
             val appLabel = pm.getApplicationLabel(appInfo).toString()
             val cleanLabel = appLabel.replace(" ", "").lowercase()
 
-            // 2글자 이상 매칭 시 실행
-            if (cleanLabel.length >= 2 && cleanCmd.contains(cleanLabel)) {
+            // 매칭 조건 개선: 명령어에 앱 이름이 포함되거나, 앱 이름에 명령어가 포함된 경우
+            if (cleanLabel.length >= 2 && (cleanCmd.contains(cleanLabel) || cleanLabel.contains(cleanCmd))) {
                 val intent = pm.getLaunchIntentForPackage(appInfo.packageName)
                 if (intent != null) {
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -285,9 +303,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
         val isAppOpenCmd =
-            cleanCmd.contains("열어줘") || cleanCmd.contains("켜줘") || cleanCmd.contains("실행해") || cleanCmd.contains(
-                "실행"
-            )
+            cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || 
+            cleanCmd.contains("보여줘")
 
         if (!isAppOpenCmd) return false
         return openAppByName(cleanCmd)
@@ -314,6 +331,20 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun getInstalledApps(): List<AppInfo> {
+        val pm = packageManager
+        val apps = pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)
+        return apps.mapNotNull { appInfo ->
+            val intent = pm.getLaunchIntentForPackage(appInfo.packageName)
+            if (intent != null) { // 실행 가능한 앱만 필터링
+                AppInfo(
+                    appLabel = pm.getApplicationLabel(appInfo).toString(),
+                    packageName = appInfo.packageName
+                )
+            } else null
+        }
+    }
+
     private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
         val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
         var baseUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
@@ -324,8 +355,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         
         val serverUrl = "$baseUrl/analyze"
+        val installedApps = getInstalledApps()
 
-        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command")
+        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -335,7 +367,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         userVoiceCommand = command,
                         uiTreeJson = uiTree,
                         screenshotBase64 = base64Image,
-                        screenSessionId = screenSessionId
+                        screenSessionId = screenSessionId,
+                        installedApps = installedApps
                     ))
                 }.body()
 
@@ -343,7 +376,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
                     if (response.actionType == "OPEN_APP") {
-                        response.targetCandidateId?.let { openAppByName(it) }
+                        val targetId = response.targetCandidateId
+                        Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
+                        if (targetId != null) {
+                            openAppByName(targetId)
+                        }
                     } else if (isValidGuideResponse(response, screenSessionId)) {
                         response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
                     }
