@@ -37,4 +37,9 @@ sealed class SelectionFlow {
     data class Cancelled(
         val session: SelectionSession
     ) : SelectionFlow()
+
+    /** 현재 추출된 후보를 모두 확인하여 추가 탐색(스크롤 등)이 필요한 상태 */
+    data class CandidatesExhausted(
+        val session: SelectionSession
+    ) : SelectionFlow()
 }

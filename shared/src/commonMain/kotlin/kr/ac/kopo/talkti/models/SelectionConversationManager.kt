@@ -67,7 +67,7 @@ class SelectionConversationManager {
             currentCandidateIndex++
             currentFlow = SelectionFlow.AwaitingVoice(session)
         } else {
-            currentFlow = SelectionFlow.Cancelled(session)
+            currentFlow = SelectionFlow.CandidatesExhausted(session)
         }
     }
 
@@ -90,6 +90,7 @@ class SelectionConversationManager {
             is SelectionFlow.AwaitingVoice -> flow.session
             is SelectionFlow.Resolved -> flow.session
             is SelectionFlow.Cancelled -> flow.session
+            is SelectionFlow.CandidatesExhausted -> flow.session
             SelectionFlow.Idle -> null
         }
     }
