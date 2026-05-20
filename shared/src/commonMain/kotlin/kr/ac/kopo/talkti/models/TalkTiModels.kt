@@ -36,6 +36,7 @@ data class GuideActionResponse(
     val targetBounds: RectDto?,
     val ttsMessage: String,
     val targetCandidateId: String? = null,
+    val actionArguments: String? = null,
     val confidence: Double? = null,
     val screenSessionId: String? = null
 )
