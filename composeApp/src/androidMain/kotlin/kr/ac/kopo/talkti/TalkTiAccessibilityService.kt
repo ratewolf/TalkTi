@@ -100,7 +100,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        Log.d(TAG, "접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작")
+        Log.d(TAG, "==== 접근성 서비스 연결됨 (V2 - UI 개선 적용됨) ====")
         initSpeechRecognizer()
         initTextToSpeech()
         setupFloatingMenu()
@@ -203,19 +203,29 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.setLanguage(java.util.Locale.KOREAN)
+                Log.d(TAG, "TTS 초기화 성공")
                 
-                // [수정] TTS가 끝나면 자동으로 음성 인식을 다시 시작 (선택 흐름인 경우)
                 textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
+                    override fun onStart(utteranceId: String?) {
+                        Log.d(TAG, "TTS 시작: $utteranceId")
+                    }
                     override fun onDone(utteranceId: String?) {
+                        Log.d(TAG, "TTS 종료: $utteranceId")
                         if (utteranceId == "talkti_selection_ask") {
+                            // TTS가 끝난 후 음성 인식을 재개합니다.
                             CoroutineScope(Dispatchers.Main).launch {
+                                delay(500) // 안정성을 위해 약간의 지연
+                                Log.d(TAG, "음성 인식 재개 시도 (utteranceId=$utteranceId)")
                                 startAppGuide()
                             }
                         }
                     }
-                    override fun onError(utteranceId: String?) {}
+                    override fun onError(utteranceId: String?) {
+                        Log.e(TAG, "TTS 에러: $utteranceId")
+                    }
                 })
+            } else {
+                Log.e(TAG, "TTS 초기화 실패: status=$status")
             }
         }
     }
@@ -431,11 +441,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
-                    speakTts(response.ttsMessage)
+                    // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
+                    val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
+                    speakTts(response.ttsMessage, utteranceId)
                     
-                    // [수정] 어떤 액션이든 targetBounds가 있다면 일단 오버레이(가이드)를 먼저 보여줍니다.
+                    // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
+                    val highlightColor = if (response.actionType == "ASK_USER") Color.YELLOW else Color.RED
+                    
                     response.targetBounds?.let { bounds ->
-                        showTargetHighlight(bounds, response.ttsMessage)
+                        showTargetHighlight(bounds, response.ttsMessage, highlightColor)
                     }
 
                     if (response.actionType == "OPEN_APP") {
@@ -447,11 +461,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
                         println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
                         response.targetBounds?.let { bounds ->
-                            // 가이드를 보여준 후 약간의 지연 시간을 두고 자동 입력을 시도하거나, 
-                            // 혹은 여기서는 가이드만 보여주고 실제 입력은 사용자가 인지하게 할 수 있습니다.
-                            // 일단 기존 로직을 유지하되 가이드가 무조건 뜨도록 순서를 조정했습니다.
                             CoroutineScope(Dispatchers.Main).launch {
-                                delay(1000) // 가이드를 볼 시간을 줍니다.
+                                delay(1000)
                                 val success = performImmediateActionSetText(bounds, response.actionArguments!!)
                                 if (!success) {
                                     pendingCommand = response.actionArguments!!
@@ -469,7 +480,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         
                         response.targetBounds?.let { bounds ->
                             CoroutineScope(Dispatchers.Main).launch {
-                                delay(1000) // 가이드를 볼 시간을 줍니다.
+                                delay(1000)
                                 val success = performImmediateActionClick(bounds)
                                 if (success) {
                                     pendingCommand = targetText
@@ -488,7 +499,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun speakTts(message: String, utteranceId: String = "talkti_tts") {
-        textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        Log.d(TAG, "speakTts(msg='$message', id='$utteranceId')")
+        val params = Bundle()
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+        val result = textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            Log.e(TAG, "speakTts 호출 실패")
+        }
     }
 
     private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
@@ -664,35 +681,45 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
-        removeTargetHighlight()
+        Log.d(TAG, "showTargetHighlight: bounds=$bounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-
-        // 지정된 색상으로 테두리 표시 (기본은 빨간색)
-        val highlight = android.view.View(this).apply {
-            val strokeWidth = (4 * resources.displayMetrics.density).toInt()
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setStroke(strokeWidth, color)
-                setColor(Color.TRANSPARENT)
-            }
-        }
-
-        val params = WindowManager.LayoutParams(
-            (bounds.right - bounds.left).coerceAtLeast(10),
-            (bounds.bottom - bounds.top).coerceAtLeast(10),
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = bounds.left
-            y = bounds.top
-        }
-        highlightView = highlight
-        windowManager.addView(highlightView, params)
-
-        highlightJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(5000)
+        
+        // 메인 스레드에서 UI 작업을 보장
+        CoroutineScope(Dispatchers.Main).launch {
             removeTargetHighlight()
+
+            val highlight = android.view.View(this@TalkTiAccessibilityService).apply {
+                val strokeWidth = (6 * resources.displayMetrics.density).toInt() // 조금 더 두껍게
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setStroke(strokeWidth, color)
+                    setColor(Color.TRANSPARENT)
+                }
+            }
+
+            val params = WindowManager.LayoutParams(
+                (bounds.right - bounds.left).coerceAtLeast(10),
+                (bounds.bottom - bounds.top).coerceAtLeast(10),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = bounds.left
+                y = bounds.top
+            }
+            
+            try {
+                highlightView = highlight
+                windowManager.addView(highlightView, params)
+                Log.d(TAG, "Highlight View 추가 성공")
+            } catch (e: Exception) {
+                Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
+            }
+
+            highlightJob = launch {
+                delay(7000) // 좀 더 길게 유지 (7초)
+                removeTargetHighlight()
+            }
         }
     }
 
