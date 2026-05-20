@@ -646,37 +646,50 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun extractScreenTree(): String {
-        val rootNode = rootInActiveWindow ?: return "[]"
         val elements = mutableListOf<UiElement>()
         var candidateCounter = 0
 
         fun traverse(node: AccessibilityNodeInfo?) {
             if (node == null) return
             if (node.isVisibleToUser) {
-                val text = node.text?.toString() ?: ""
-                val contentDescription = node.contentDescription?.toString() ?: ""
-                val id = node.viewIdResourceName ?: "no_id"
-                val className = node.className?.toString() ?: "no_class"
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
 
-                if (text.isNotBlank() || contentDescription.isNotBlank() || node.isClickable) {
-                    val rect = Rect()
-                    node.getBoundsInScreen(rect)
-                    elements.add(UiElement(
-                        candidateId = "candidate_${candidateCounter++}",
-                        text = text,
-                        contentDescription = contentDescription,
-                        id = id,
-                        className = className,
-                        bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom),
-                        clickable = node.isClickable,
-                        enabled = node.isEnabled,
-                        visibleToUser = node.isVisibleToUser
-                    ))
+                // 유효한 크기를 가진 노드만 수집
+                if (rect.width() > 0 && rect.height() > 0) {
+                    val text = node.text?.toString() ?: ""
+                    val contentDescription = node.contentDescription?.toString() ?: ""
+                    val id = node.viewIdResourceName ?: "no_id"
+                    val className = node.className?.toString() ?: "no_class"
+
+                    if (text.isNotBlank() || contentDescription.isNotBlank() || node.isClickable) {
+                        elements.add(UiElement(
+                            candidateId = "candidate_${candidateCounter++}",
+                            text = text,
+                            contentDescription = contentDescription,
+                            id = id,
+                            className = className,
+                            bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom),
+                            clickable = node.isClickable,
+                            enabled = node.isEnabled,
+                            visibleToUser = node.isVisibleToUser
+                        ))
+                    }
                 }
             }
             for (i in 0 until node.childCount) traverse(node.getChild(i))
         }
-        traverse(rootNode)
+
+        // rootInActiveWindow 대신 모든 윈도우를 순회하여 더 정확한 좌표 정보를 수집합니다.
+        val currentWindows = windows
+        if (currentWindows.isNullOrEmpty()) {
+            traverse(rootInActiveWindow)
+        } else {
+            for (window in currentWindows) {
+                traverse(window.root)
+            }
+        }
+        
         return Json.encodeToString(elements)
     }
 
@@ -700,12 +713,20 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 (bounds.right - bounds.left).coerceAtLeast(10),
                 (bounds.bottom - bounds.top).coerceAtLeast(10),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 x = bounds.left
                 y = bounds.top
+                
+                // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
             }
             
             try {
