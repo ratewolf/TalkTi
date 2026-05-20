@@ -38,7 +38,15 @@ import kr.ac.kopo.talkti.models.ScreenStateRequest
 import kr.ac.kopo.talkti.models.GuideActionResponse
 import kr.ac.kopo.talkti.models.RectDto
 import kr.ac.kopo.talkti.models.UiElement
+import kr.ac.kopo.talkti.models.SelectionConversationManager
+import kr.ac.kopo.talkti.models.SelectionPromptBuilder
+import kr.ac.kopo.talkti.models.CandidateExtractor
+import kr.ac.kopo.talkti.models.SelectionSession
+import kr.ac.kopo.talkti.models.UserResponseParser
+import kr.ac.kopo.talkti.models.UserResponse
+import kr.ac.kopo.talkti.models.SelectionFlow
 import io.ktor.serialization.kotlinx.json.*
+
 
 import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
 
@@ -61,6 +69,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private val TAG = "TalkTiService"
+
+    // 음성 선택 시스템 준비
+    private val selectionManager = SelectionConversationManager()
+    private val promptBuilder = SelectionPromptBuilder()
+    private val candidateExtractor = CandidateExtractor()
+    private val responseParser = UserResponseParser()
+    private val visitedCandidateTexts = mutableSetOf<String>()
 
     private var floatingMenuManager: FloatingMenuManager? = null
 
@@ -157,8 +172,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         val userCommand = matches[0]
-                        if (!processLocalCommand(userCommand)) {
-                            captureScreenForLLM(userCommand)
+                        
+                        val currentFlow = selectionManager.currentFlow
+                        if (currentFlow is SelectionFlow.Presenting || currentFlow is SelectionFlow.AwaitingVoice) {
+                            handleSelectionResponse(userCommand)
+                        } else {
+                            if (!processLocalCommand(userCommand)) {
+                                captureScreenForLLM(userCommand)
+                            }
                         }
                     }
                     updateButtonStatus(false)
@@ -319,6 +340,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
+        
+        // [추가] Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
+        if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
+            startSelectionFlow(isContinuation = false)
+            return true
+        }
         val isAppOpenCmd =
             cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") ||
             cleanCmd.contains("보여줘")
@@ -458,6 +485,115 @@ class TalkTiAccessibilityService : AccessibilityService() {
         // 압축률을 50%로 조정하여 전송 데이터 크기를 대폭 줄임
         bitmap.compress(Bitmap.CompressFormat.JPEG, 50, outputStream)
         return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+    }
+
+    private fun handleSelectionResponse(sttResult: String) {
+        val response = responseParser.parse(sttResult)
+
+        if (response == UserResponse.UNKNOWN) {
+            val currentCandidate = selectionManager.getCurrentCandidate()
+            if (currentCandidate != null) {
+                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
+                speakTts(prompt)
+            }
+            return
+        }
+
+        selectionManager.handleResponse(response)
+
+        when (val flow = selectionManager.currentFlow) {
+            is SelectionFlow.Resolved -> {
+                val candidate = flow.selected
+                val ttsMessage = "${candidate.text} 선택이 완료되었습니다."
+                speakTts(ttsMessage)
+                showTargetHighlight(candidate.bounds, ttsMessage)
+            }
+            is SelectionFlow.AwaitingVoice -> {
+                val currentCandidate = selectionManager.getCurrentCandidate()
+                if (currentCandidate != null) {
+                    val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
+                    speakTts(prompt)
+                }
+            }
+            is SelectionFlow.Cancelled -> {
+                speakTts("선택이 취소되었습니다.")
+            }
+            is SelectionFlow.CandidatesExhausted -> {
+                speakTts("화면의 모든 항목을 확인했습니다. 다음 화면을 탐색합니다.")
+                val scrolled = attemptScrollForward()
+                if (scrolled) {
+                    CoroutineScope(Dispatchers.Main).launch {
+                        delay(1000) // 스크롤 애니메이션 대기
+                        startSelectionFlow(isContinuation = true)
+                    }
+                }
+            }
+            else -> {}
+        }
+    }
+
+    private fun attemptScrollForward(): Boolean {
+        val rootNode = rootInActiveWindow ?: return false
+        
+        val queue = mutableListOf(rootNode)
+        while (queue.isNotEmpty()) {
+            val node = queue.removeAt(0)
+            
+            // 스크롤 가능하며, 전방 스크롤(ACTION_SCROLL_FORWARD) 액션을 지원하는지 확인
+            if (node.isScrollable && node.actionList.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)) {
+                val scrolled = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                if (scrolled) {
+                    // 스크롤 성공 시 간단한 안내
+                    // 추후 이 시점에 새 화면을 캡처하고 후보를 추출하는 로직을 연결할 수 있습니다.
+                    speakTts("화면을 넘겼습니다.")
+                    return true
+                }
+            }
+            
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        
+        speakTts("더 이상 넘길 화면이 없습니다.")
+        return false
+    }
+
+    private fun startSelectionFlow(isContinuation: Boolean = false) {
+        if (!isContinuation) {
+            visitedCandidateTexts.clear()
+        }
+
+        val uiTreeJson = extractScreenTree()
+        val elements = try {
+            Json.decodeFromString<List<UiElement>>(uiTreeJson)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val candidates = candidateExtractor.extractCandidates(elements)
+            .filter { it.text !in visitedCandidateTexts }
+
+        // 현재 추출된 후보들을 방문 기록에 추가
+        candidates.forEach { visitedCandidateTexts.add(it.text) }
+
+        if (candidates.isNotEmpty()) {
+            val session = SelectionSession(
+                sessionId = "session_${System.currentTimeMillis()}",
+                question = "원하시는 항목을 말씀해주세요.",
+                candidates = candidates
+            )
+            
+            selectionManager.startSession(session)
+            
+            val currentCandidate = selectionManager.getCurrentCandidate()
+            if (currentCandidate != null) {
+                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
+                speakTts(prompt)
+            }
+        } else {
+            speakTts("더 이상 새로운 항목이 없습니다.")
+        }
     }
 
     override fun onDestroy() {
