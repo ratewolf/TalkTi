@@ -4,23 +4,27 @@ class SelectionPromptBuilder {
 
     /**
      * Candidate 정보를 기반으로 사용자에게 읽어줄 질문 문장을 생성합니다.
-     * 현재는 길찾기 목적지 질문 중심으로 간단하게 구현되어 있습니다.
-     * (추후 Session 도메인이나 설정에 따라 확장 가능)
      *
      * @param candidate 질문 대상 후보
+     * @param index 현재 인덱스 (0부터 시작)
      * @return TTS로 읽어줄 질문 문자열
      */
-    fun buildCandidateQuestion(candidate: Candidate): String {
+    fun buildCandidateQuestion(candidate: Candidate, index: Int): String {
         val targetText = candidate.text.trim()
         
-        if (targetText.isEmpty()) {
-            return "여기로 안내할까요?"
+        val prefix = when (index) {
+            0 -> "첫 번째 장소입니다. "
+            1 -> "그 다음은 "
+            2 -> "세 번째 장소는 "
+            else -> "그 다음 장소는 "
         }
 
-        // 목적지를 자연스럽게 묻기 위한 조사 처리 ('로'/'으로')
+        if (targetText.isEmpty()) {
+            return "${prefix}여기가 맞으신가요?"
+        }
+
         val postposition = getDirectionPostposition(targetText)
-        
-        return "${targetText}${postposition} 가실까요?"
+        return "${prefix}${targetText}${postposition} 가실까요?"
     }
 
     /**

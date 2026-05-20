@@ -203,6 +203,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.setLanguage(java.util.Locale.KOREAN)
+                
+                // [수정] TTS가 끝나면 자동으로 음성 인식을 다시 시작 (선택 흐름인 경우)
+                textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        if (utteranceId == "talkti_selection_ask") {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                startAppGuide()
+                            }
+                        }
+                    }
+                    override fun onError(utteranceId: String?) {}
+                })
             }
         }
     }
@@ -419,6 +432,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
+                    
+                    // [수정] 어떤 액션이든 targetBounds가 있다면 일단 오버레이(가이드)를 먼저 보여줍니다.
+                    response.targetBounds?.let { bounds ->
+                        showTargetHighlight(bounds, response.ttsMessage)
+                    }
+
                     if (response.actionType == "OPEN_APP") {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
@@ -426,39 +445,37 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             openAppByName(targetId)
                         }
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
-                        println("즉시 자동 텍스트 입력 실행: ${response.actionArguments}")
+                        println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
                         response.targetBounds?.let { bounds ->
-                            val success = performImmediateActionSetText(bounds, response.actionArguments!!)
-                            if (!success) {
-                                println("즉시 입력 실패! 가짜 입력창으로 판단되어 자동 클릭 및 매크로 대기열을 가동합니다.")
-                                pendingCommand = response.actionArguments!!
-                                val clickSuccess = performImmediateActionClick(bounds)
-                                if (!clickSuccess) {
-                                    println("클릭 우회마저 실패하여 노란색 가이드로 우회합니다.")
-                                    showTargetHighlight(bounds, response.ttsMessage)
+                            // 가이드를 보여준 후 약간의 지연 시간을 두고 자동 입력을 시도하거나, 
+                            // 혹은 여기서는 가이드만 보여주고 실제 입력은 사용자가 인지하게 할 수 있습니다.
+                            // 일단 기존 로직을 유지하되 가이드가 무조건 뜨도록 순서를 조정했습니다.
+                            CoroutineScope(Dispatchers.Main).launch {
+                                delay(1000) // 가이드를 볼 시간을 줍니다.
+                                val success = performImmediateActionSetText(bounds, response.actionArguments!!)
+                                if (!success) {
+                                    pendingCommand = response.actionArguments!!
+                                    performImmediateActionClick(bounds)
                                 }
                             }
                         }
                     } else if (response.actionType == "CLICK") {
-                        println("즉시 자동 클릭 실행")
+                        println("자동 클릭 예약 실행")
                         val targetText = if (!response.actionArguments.isNullOrBlank()) {
                             response.actionArguments!!
                         } else {
                             cleanSearchQuery(command)
                         }
-                        pendingCommand = targetText
-                        println("화면 전환 대기 목적지 설정: $targetText")
-
+                        
                         response.targetBounds?.let { bounds ->
-                            val success = performImmediateActionClick(bounds)
-                            if (!success) {
-                                println("즉시 클릭 실패, 노란색 가이드로 우회합니다.")
-                                showTargetHighlight(bounds, response.ttsMessage)
+                            CoroutineScope(Dispatchers.Main).launch {
+                                delay(1000) // 가이드를 볼 시간을 줍니다.
+                                val success = performImmediateActionClick(bounds)
+                                if (success) {
+                                    pendingCommand = targetText
+                                }
                             }
                         }
-                    } else if (isValidGuideResponse(response, screenSessionId)) {
-                        println("클릭 명령이 아닌 ttsMessage 반환")
-                        response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
                     }
                 }
             } catch (e: Exception) {
@@ -470,8 +487,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun speakTts(message: String) {
-        textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "talkti_tts")
+    private fun speakTts(message: String, utteranceId: String = "talkti_tts") {
+        textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
     }
 
     private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
@@ -493,8 +510,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
         if (response == UserResponse.UNKNOWN) {
             val currentCandidate = selectionManager.getCurrentCandidate()
             if (currentCandidate != null) {
-                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
-                speakTts(prompt)
+                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
+                speakTts(prompt, "talkti_selection_ask")
+                showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
             }
             return
         }
@@ -506,20 +524,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val candidate = flow.selected
                 val ttsMessage = "${candidate.text} 선택이 완료되었습니다."
                 speakTts(ttsMessage)
-                showTargetHighlight(candidate.bounds, ttsMessage)
+                showTargetHighlight(candidate.bounds, ttsMessage, Color.RED)
             }
             is SelectionFlow.AwaitingVoice -> {
                 val currentCandidate = selectionManager.getCurrentCandidate()
                 if (currentCandidate != null) {
-                    val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
-                    speakTts(prompt)
+                    val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
+                    speakTts(prompt, "talkti_selection_ask")
+                    showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
                 }
             }
             is SelectionFlow.Cancelled -> {
                 speakTts("선택이 취소되었습니다.")
+                removeTargetHighlight()
             }
             is SelectionFlow.CandidatesExhausted -> {
                 speakTts("화면의 모든 항목을 확인했습니다. 다음 화면을 탐색합니다.")
+                removeTargetHighlight()
                 val scrolled = attemptScrollForward()
                 if (scrolled) {
                     CoroutineScope(Dispatchers.Main).launch {
@@ -588,8 +609,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             
             val currentCandidate = selectionManager.getCurrentCandidate()
             if (currentCandidate != null) {
-                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
-                speakTts(prompt)
+                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
+                speakTts(prompt, "talkti_selection_ask")
+                showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
             }
         } else {
             speakTts("더 이상 새로운 항목이 없습니다.")
@@ -641,15 +663,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return Json.encodeToString(elements)
     }
 
-    private fun showTargetHighlight(bounds: RectDto, message: String) {
+    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
         removeTargetHighlight()
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // 빨간색 박스(테두리)만 표시하도록 변경
+        // 지정된 색상으로 테두리 표시 (기본은 빨간색)
         val highlight = android.view.View(this).apply {
             val strokeWidth = (4 * resources.displayMetrics.density).toInt()
             background = android.graphics.drawable.GradientDrawable().apply {
-                setStroke(strokeWidth, Color.RED)
+                setStroke(strokeWidth, color)
                 setColor(Color.TRANSPARENT)
             }
         }

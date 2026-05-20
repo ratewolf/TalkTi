@@ -123,7 +123,7 @@ class AnalyzeService(
             .getOrElse { JsonArray(emptyList()) }
 
         return elements.mapNotNull { element -> parseCandidate(element) }
-            .filter { it.clickable && it.enabled && it.visibleToUser }
+            .filter { (it.clickable || it.text.isNotBlank() || it.contentDesc.isNotBlank()) && it.enabled && it.visibleToUser }
     }
 
     private fun parseCandidate(element: JsonElement): UiCandidate? {
