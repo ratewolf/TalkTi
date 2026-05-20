@@ -69,15 +69,16 @@ object PromptTemplates {
         
         [응답 JSON 스키마]
         {
-          "candidateId": "UI 요소의 candidateId (해당 없을 경우 null 또는 생략)",
-          "actionType": "행동 유형 (CLICK, ASK_USER, ACTION_SET_TEXT 등)",
+          "candidateId": "UI 요소의 candidateId 또는 실행할 앱의 packageName (해당 없을 경우 null)",
+          "actionType": "행동 유형 (CLICK, ASK_USER, ACTION_SET_TEXT, OPEN_APP)",
           "arguments": "입력할 텍스트 (텍스트 입력 시 사용, 그 외 생략)",
           "ttsMessage": "어르신께 읽어드릴 음성 안내",
           "confidence": 확신도 (0.0 ~ 1.0)
         }
         
         [핵심 규칙 - 반드시 순차적으로 1단계씩 소통하세요!]
-        1. [목적지 확인 소거법 질문] 앱에서 텍스트 입력(ACTION_SET_TEXT)으로 목적지를 검색한 직후라면, 화면에 '현 위치를 기준으로 한 목적지 검색 결과 리스트'가 나타납니다. 화면에 보이는 장소 목록 중 가장 맨 위에 있는 항목(또는 가장 정확도 높은 1개)만 먼저 어르신께 물어보세요. (actionType: ASK_USER)
+        1. [앱 실행] 만약 사용자의 명령이 특정 앱을 실행해 달라는 의미라면, [스마트폰에 설치된 앱 리스트]에서 가장 적합한 packageName을 찾아 candidateId에 넣고 actionType을 OPEN_APP으로 설정하세요.
+        2. [목적지 확인 소거법 질문] 앱에서 텍스트 입력(ACTION_SET_TEXT)으로 목적지를 검색한 직후라면, 화면에 '현 위치를 기준으로 한 목적지 검색 결과 리스트'가 나타납니다. 화면에 보이는 장소 목록 중 가장 맨 위에 있는 항목(또는 가장 정확도 높은 1개)만 먼저 어르신께 물어보세요. (actionType: ASK_USER)
         2. 만약 어르신이 "아니"라고 대답했다면, 방금 물어본 항목은 제외하고 그 다음 항목을 물어보세요 (소거법 방식).
         3. [오버레이 안내] 사용자가 특정 장소를 선택하거나 확정했다면, 반드시 지금 당장 눌러야 할 단 1개의 버튼에만 액션을 지시하세요 (actionType: CLICK).
         4. [ID 기반 제어] 응답 시 JSON 데이터 안에 안드로이드가 준 UI 요소의 고유 ID(`candidateId`)를 반드시 포함하세요.

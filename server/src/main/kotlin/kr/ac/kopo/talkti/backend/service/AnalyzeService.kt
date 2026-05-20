@@ -49,14 +49,12 @@ class AnalyzeService(
         val simplifiedJson = Json.encodeToString(simplifiedElements)
         val installedAppsJson = Json.encodeToString(request.installedApps ?: emptyList<AppInfo>())
 
-        val systemPrompt = PromptTemplates.ANALYZE_UI_SYSTEM_PROMPT
-        val userPrompt = PromptTemplates.buildUserPrompt(request.userVoiceCommand, simplifiedJson, installedAppsJson)
         // 2. 프롬프트 생성 및 LLM 호출
-        val combinedPrompt = PromptTemplates.buildScreenAnalyzePrompt(
-            currentIntent = request.userVoiceCommand,
-            historyText = "이전 대화 없음", // 필요 시 DB 연동
-            uiElementsJson = simplifiedJson
-        )
+        val combinedPrompt = """
+            ${PromptTemplates.SCREEN_ANALYZE_SYSTEM_PROMPT}
+            
+            ${PromptTemplates.buildScreenAnalyzePrompt(request.userVoiceCommand, simplifiedJson, installedAppsJson)}
+        """.trimIndent()
 
         println("--- LLM 호출 시작 ---")
         val rawLlmRes = ollamaClient.generate(combinedPrompt, request.screenshotBase64)
