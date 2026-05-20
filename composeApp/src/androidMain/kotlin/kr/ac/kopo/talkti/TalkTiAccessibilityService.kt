@@ -281,6 +281,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "카톡" to listOf("com.kakao.talk"),
             "카카오톡" to listOf("com.kakao.talk"),
             "네이버" to listOf("com.nhn.android.search", "com.nhn.android.nmap"),
+            "당근마켓" to listOf("com.towneers.www"),
+            "당근" to listOf("com.towneers.www"),
+            "중고거래" to listOf("com.towneers.www"),
             //유튜브
             "유튜브" to listOf("com.google.android.youtube"),
             "유튭" to listOf("com.google.android.youtube"),
@@ -290,7 +293,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "만보기" to listOf("com.sec.android.app.shealth"),
             "걷기" to listOf("com.sec.android.app.shealth"),
             "설정" to listOf("com.android.settings"),
-            "톱니바퀴" to listOf("com.android.settings")
+            "톱니바퀴" to listOf("com.android.settings"),
+            //배달
+            "배달" to listOf("woowahan.baemin","com.coupang.mobile.eats"),
+            "배달의민족" to listOf("woowahan.baemin"),
+            "배민" to listOf("woowahan.baemin"),
+            "쿠팡이츠" to listOf("com.coupang.mobile.eats"),
+            "쿠팡배달" to listOf("com.coupang.mobile.eats"),
+            "쿠팡음식" to listOf("com.coupang.mobile.eats")
+
         )
 
         //별칭 검색 및 실행 로직 (양방향 매칭 적용)
