@@ -49,6 +49,7 @@ import io.ktor.serialization.kotlinx.json.*
 
 
 import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
+import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -79,6 +80,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private var floatingMenuManager: FloatingMenuManager? = null
 
+    // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
+    private val errorHandlingManager = ErrorHandlingManager()
+
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
 
@@ -104,6 +108,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
         initSpeechRecognizer()
         initTextToSpeech()
         setupFloatingMenu()
+
+        // 예외 처리 매니저 초기화
+        errorHandlingManager.initialize(this, textToSpeech)
+        errorHandlingManager.onTerminateListener = {
+            // 가이드 종료 시 서비스 상태 초기화
+            pendingCommand = null
+            removeTargetHighlight()
+        }
     }
 
     private fun setupFloatingMenu() {
@@ -208,6 +220,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // ── 예외 처리 인터셉터: 팝업/이탈/타이머 검사를 기존 로직보다 먼저 수행 ──
+        if (errorHandlingManager.interceptEvent(event)) return
+
         val command = pendingCommand
         if (command != null && (
             event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
@@ -260,7 +275,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "앨범" to listOf("com.sec.android.gallery3d"),
             "찍은거" to listOf("com.sec.android.gallery3d"),
             //지도
-            "지도" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "길찾기" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "네비" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "내비게이션" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
@@ -295,7 +309,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "설정" to listOf("com.android.settings"),
             "톱니바퀴" to listOf("com.android.settings"),
             //배달
-            "배달" to listOf("woowahan.baemin","com.coupang.mobile.eats"),
+            "배달앱" to listOf("woowahan.baemin","com.coupang.mobile.eats"),
             "배달의민족" to listOf("woowahan.baemin"),
             "배민" to listOf("woowahan.baemin"),
             "쿠팡이츠" to listOf("com.coupang.mobile.eats"),
@@ -430,6 +444,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
+
+                    // 가이드 시작 등록 (예외 처리 매니저에 현재 대상 앱/목표 전달)
+                    val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                    if (currentPkg.isNotBlank()) {
+                        errorHandlingManager.onGuideStarted(currentPkg, command)
+                    }
                     if (response.actionType == "OPEN_APP") {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
@@ -610,6 +630,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        errorHandlingManager.destroy() // 예외 처리 매니저 리소스 정리
         speechRecognizer?.destroy()
         textToSpeech?.stop()
         textToSpeech?.shutdown()
@@ -678,6 +699,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         highlightView = highlight
         windowManager.addView(highlightView, params)
+
+        // 예외 처리 매니저에 하이라이트 좌표 전달 (깜빡임 효과에 재사용)
+        errorHandlingManager.setHighlightBounds(
+            android.graphics.Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
+        )
+        // 하이라이트 표시 = 가이드 안내 완료 → 타이머 시작
+        errorHandlingManager.onUserActionDetected()
 
         highlightJob = CoroutineScope(Dispatchers.Main).launch {
             delay(5000)
