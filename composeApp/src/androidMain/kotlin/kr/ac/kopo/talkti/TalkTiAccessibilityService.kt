@@ -429,6 +429,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
         Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
 
         CoroutineScope(Dispatchers.IO).launch {
+            withContext(Dispatchers.Main) {
+                LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+            }
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
                     contentType(ContentType.Application.Json)
@@ -496,6 +499,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    LlmLoadingOverlay.hide()
                 }
             }
         }
