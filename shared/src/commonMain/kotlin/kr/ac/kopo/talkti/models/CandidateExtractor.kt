@@ -27,6 +27,17 @@ class CandidateExtractor {
         "확인"
     )
 
+    private val excludedKeywords = listOf(
+        "맛집",
+        "카페",
+        "날씨",
+        "주차장",
+        "후기",
+        "리뷰",
+        "사진",
+        "블로그"
+    )
+
     /**
      * UiElement 리스트에서 사용자 선택 후보가 될 수 있는 항목만 추출하여
      * Candidate 리스트로 변환합니다.
@@ -51,7 +62,10 @@ class CandidateExtractor {
             if (
                 targetText != null &&
                 targetText.isNotBlank() &&
-                targetText !in excludedTexts
+                targetText !in excludedTexts &&
+                element.clickable &&
+                element.enabled &&
+                element.visibleToUser
             ) {
                 Candidate(
                     id = element.candidateId,
