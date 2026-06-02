@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">TalkTi</string>
+    <string name="accessibility_description">TalkTi의 접근성 권한 설명입니다.</string>
+</resources>
