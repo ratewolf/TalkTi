@@ -101,8 +101,6 @@ class PopupDetector {
      * - layer 값이 높은 윈도우 (메인 앱 위에 떠 있는 오버레이)
      */
     private fun findPopupWindows(allWindows: List<AccessibilityWindowInfo>): List<AccessibilityWindowInfo> {
-        if (allWindows.size <= 1) return emptyList()
-
         val result = mutableListOf<AccessibilityWindowInfo>()
 
         // 가장 큰 윈도우(메인 앱)의 크기를 기준으로 삼음
@@ -119,10 +117,13 @@ class PopupDetector {
         for (window in allWindows) {
             val root = window.root ?: continue
 
-            // 키보드(입력창)나 똑띠 자체 오버레이는 팝업 검사에서 제외
+            // 키보드(입력창), 시스템 UI(내비게이션바, 상태바), 똑띠 자체 오버레이는 팝업 검사에서 제외
             if (window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
+            if (window.type == AccessibilityWindowInfo.TYPE_SYSTEM) continue
+            
             val pkgName = root.packageName?.toString() ?: ""
             if (pkgName.contains("kr.ac.kopo.talkti")) continue
+            if (pkgName.contains("com.android.systemui")) continue
 
             val windowRect = Rect()
             window.getBoundsInScreen(windowRect)

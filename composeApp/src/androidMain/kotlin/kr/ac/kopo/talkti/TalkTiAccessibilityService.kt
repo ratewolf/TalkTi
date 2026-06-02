@@ -247,7 +247,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    private fun openAppByName(appNameOrPackage: String): Boolean {
+    private fun openAppByName(appNameOrPackage: String): String? {
         val pm = packageManager
         Log.d(TAG, "openAppByName 호출: $appNameOrPackage")
 
@@ -259,7 +259,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 startActivity(intent)
                 val appLabel = pm.getApplicationLabel(pm.getApplicationInfo(appNameOrPackage, 0))
                 speakTts("${appLabel} 앱을 실행합니다.")
-                return true
+                return appNameOrPackage
             }
         } catch (e: Exception) {
             // 패키지명이 아닌 경우 아래의 검색 로직으로 진행
@@ -337,7 +337,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         startActivity(intent)
                         speakTts("${alias}를 실행합니다.")
-                        return true
+                        return installedPackage
                     }
                 }
             }
@@ -356,11 +356,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
                     speakTts("${appLabel}을 실행합니다.")
-                    return true
+                    return appInfo.packageName
                 }
             }
         }
-        return false
+        return null
     }
 
     private fun processLocalCommand(command: String): Boolean {
@@ -376,7 +376,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
             cleanCmd.contains("보여줘")
 
         if (!isAppOpenCmd) return false
-        return openAppByName(cleanCmd)
+        val launchedPkg = openAppByName(cleanCmd)
+        if (launchedPkg != null) {
+            errorHandlingManager.onGuideStarted(launchedPkg, command)
+            return true
+        }
+        return false
     }
 
     fun captureScreenForLLM(userCommand: String) {
@@ -445,17 +450,25 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 withContext(Dispatchers.Main) {
                     speakTts(response.ttsMessage)
 
-                    // 가이드 시작 등록 (예외 처리 매니저에 현재 대상 앱/목표 전달)
-                    val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
-                    if (currentPkg.isNotBlank()) {
-                        errorHandlingManager.onGuideStarted(currentPkg, command)
-                    }
                     if (response.actionType == "OPEN_APP") {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
                         if (targetId != null) {
-                            openAppByName(targetId)
+                            val launchedPkg = openAppByName(targetId)
+                            if (launchedPkg != null) {
+                                errorHandlingManager.onGuideStarted(launchedPkg, command)
+                            }
                         }
+                    } else {
+                        // OPEN_APP이 아닐 때는 가이드 시작 전 현재 패키지를 타겟으로 설정
+                        val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                        if (currentPkg.isNotBlank()) {
+                            errorHandlingManager.onGuideStarted(currentPkg, command)
+                        }
+                    }
+
+                    if (response.actionType == "OPEN_APP") {
+                        // OPEN_APP 처리는 이미 위에서 완료
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
                         println("즉시 자동 텍스트 입력 실행: ${response.actionArguments}")
                         response.targetBounds?.let { bounds ->
