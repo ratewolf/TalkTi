@@ -431,6 +431,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         CoroutineScope(Dispatchers.IO).launch {
             withContext(Dispatchers.Main) {
                 LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+                speakTts("어떻게 도와드릴지 찾고 있어요. 잠시만 기다려주세요.")
             }
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {

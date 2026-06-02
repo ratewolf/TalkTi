@@ -77,7 +77,7 @@ object LlmLoadingOverlay {
         cardLayout.addView(messageText)
 
         val cardParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
+            dpToPx(context, 320f).toInt(),
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.CENTER
