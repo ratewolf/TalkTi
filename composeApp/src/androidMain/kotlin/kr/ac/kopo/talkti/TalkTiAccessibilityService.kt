@@ -91,6 +91,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var highlightView: android.view.View? = null
     private var highlightJob: Job? = null
     private var pendingCommand: String? = null
+    private var autoDestinationQuery: String? = null
+    private var isAutoDestinationFlowActive = false
     private enum class GuideStep {
         NONE,
         PLACE_SELECTION,
@@ -262,10 +264,25 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val currentCmd = pendingCommand
                 if (currentCmd != null) {
                     val success = autofillEditTextInActiveWindow(currentCmd)
+
                     if (success) {
+
                         pendingCommand = null // 타이핑 성공 시 대기 큐에서 제거
+
                         speakTts("${currentCmd}을 입력했습니다.")
+
+                        if (isAutoDestinationFlowActive) {
+
+                            CoroutineScope(Dispatchers.Main).launch {
+
+                                delay(1500)
+
+                                showAutoDestinationCandidates()
+                            }
+                        }
+
                     } else {
+
                         println("❌ [매크로 대기] 입력창 검색 실패. 다음 변경 이벤트를 기다립니다.")
                     }
                 }
@@ -451,6 +468,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
 
+        if (cleanCmd.endsWith("가자")) {
+
+            val destination =
+                cleanCmd.removeSuffix("가자").trim()
+
+            if (destination.isNotBlank()) {
+
+                autoDestinationQuery = destination
+                isAutoDestinationFlowActive = true
+
+                pendingCommand = destination
+
+                speakTts("${destination}을 검색합니다.")
+
+                return true
+            }
+        }
         // [추가] Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
             startSelectionFlow(isContinuation = false)
@@ -744,7 +778,42 @@ class TalkTiAccessibilityService : AccessibilityService() {
             speakTts("더 이상 새로운 항목이 없습니다.")
         }
     }
+    private fun showAutoDestinationCandidates() {
 
+        val uiTreeJson = extractScreenTree()
+
+        val elements = try {
+            Json.decodeFromString<List<UiElement>>(uiTreeJson)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val candidates =
+            candidateExtractor.extractCandidates(elements)
+
+        if (candidates.isEmpty()) {
+
+            speakTts("목적지를 찾을 수 없습니다.")
+
+            return
+        }
+
+        candidateOverlayManager?.showCandidates(candidates) { selectedCandidate ->
+
+            performImmediateActionClick(
+                selectedCandidate.bounds
+            )
+
+            speakTts("${selectedCandidate.text} 선택됨")
+
+            currentGuideStep =
+                GuideStep.PLACE_SELECTION
+
+            isAutoDestinationFlowActive = false
+        }
+
+        speakTts("목적지를 선택해주세요.")
+    }
     private fun showRouteSelectionOverlay() {
 
         val currentUiTree = extractScreenTree()
