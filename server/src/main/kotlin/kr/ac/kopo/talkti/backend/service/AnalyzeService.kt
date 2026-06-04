@@ -3,6 +3,7 @@ package kr.ac.kopo.talkti.backend.service
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import kr.ac.kopo.talkti.backend.service.llm.ClaudeClient
 import kr.ac.kopo.talkti.backend.service.llm.OllamaClient
 import kr.ac.kopo.talkti.data.parser.UiNodeParser
 import kr.ac.kopo.talkti.llm.prompt.PromptTemplates
@@ -17,7 +18,7 @@ import kr.ac.kopo.talkti.models.ScreenStateRequest
 class AnalyzeService(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val nodeParser: UiNodeParser = UiNodeParser(),
-    private val ollamaClient: OllamaClient = OllamaClient()
+    private val claudeClient: ClaudeClient = ClaudeClient() // OllamaClient 대신 ClaudeClient 사용
 ) {
     data class UiCandidate(
         val candidateId: String,
@@ -56,8 +57,8 @@ class AnalyzeService(
             ${PromptTemplates.buildScreenAnalyzePrompt(request.userVoiceCommand, simplifiedJson, installedAppsJson)}
         """.trimIndent()
 
-        println("--- LLM 호출 시작 ---")
-        val rawLlmRes = ollamaClient.generate(combinedPrompt, request.screenshotBase64)
+        println("--- Claude 호출 시작 ---")
+        val rawLlmRes = claudeClient.generate(combinedPrompt, request.screenshotBase64)
         
         return if (rawLlmRes != null) {
             try {
