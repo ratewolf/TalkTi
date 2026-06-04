@@ -41,14 +41,17 @@ import kr.ac.kopo.talkti.models.UiElement
 import kr.ac.kopo.talkti.models.SelectionConversationManager
 import kr.ac.kopo.talkti.models.SelectionPromptBuilder
 import kr.ac.kopo.talkti.models.CandidateExtractor
+import kr.ac.kopo.talkti.models.ActionTargetFinder
 import kr.ac.kopo.talkti.models.SelectionSession
 import kr.ac.kopo.talkti.models.UserResponseParser
 import kr.ac.kopo.talkti.models.UserResponse
 import kr.ac.kopo.talkti.models.SelectionFlow
 import io.ktor.serialization.kotlinx.json.*
 
-
 import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
+import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
+import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
+import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
@@ -79,6 +82,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private val visitedCandidateTexts = mutableSetOf<String>()
 
     private var floatingMenuManager: FloatingMenuManager? = null
+    private var candidateOverlayManager: CandidateOverlayManager? = null
+    private var actionButtonOverlayManager: ActionButtonOverlayManager? = null
+    private var actionTargetFinder : ActionTargetFinder? = null
+    private var routeCandidateFinder : RouteCandidateFinder? = null
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -89,6 +96,17 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var highlightView: android.view.View? = null
     private var highlightJob: Job? = null
     private var pendingCommand: String? = null
+    private var autoDestinationQuery: String? = null
+    private var isAutoDestinationFlowActive = false
+    private enum class GuideStep {
+        NONE,
+        PLACE_SELECTION,
+        DESTINATION_BUTTON,
+        ROUTE_SELECTION,
+        START_GUIDANCE
+    }
+
+    private var currentGuideStep = GuideStep.NONE
     private var llmJob: Job? = null
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
@@ -109,6 +127,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
         initSpeechRecognizer()
         initTextToSpeech()
         setupFloatingMenu()
+        candidateOverlayManager = CandidateOverlayManager(this)
+        actionButtonOverlayManager = ActionButtonOverlayManager(this)
+        actionTargetFinder = ActionTargetFinder()
+        routeCandidateFinder = RouteCandidateFinder()
 
         // 예외 처리 매니저 초기화
         errorHandlingManager.initialize(this, textToSpeech)
@@ -124,7 +146,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             context = this,
             onAppGuideClick = { startAppGuide() },
             onTextInputClick = { showTextInputDialog() },
-            onKioskModeClick = { 
+            onKioskModeClick = {
                 Toast.makeText(this, "키오스크 안내 모드는 준비 중입니다.", Toast.LENGTH_SHORT).show()
             },
             onOpenAppClick = {
@@ -174,7 +196,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val editText = EditText(this).apply {
             hint = "예: 카카오톡 보내줘, 택시 불러줘"
         }
-        
+
         val dialog = AlertDialog.Builder(this)
             .setTitle("명령 입력")
             .setMessage("수행할 동작을 텍스트로 입력해주세요.")
@@ -210,7 +232,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         val userCommand = matches[0]
-                        
+
                         val currentFlow = selectionManager.currentFlow
                         if (currentFlow is SelectionFlow.Presenting || currentFlow is SelectionFlow.AwaitingVoice) {
                             handleSelectionResponse(userCommand)
@@ -242,7 +264,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.setLanguage(java.util.Locale.KOREAN)
                 Log.d(TAG, "TTS 초기화 성공")
-                
+
                 textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         Log.d(TAG, "TTS 시작: $utteranceId")
@@ -274,21 +296,104 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         val command = pendingCommand
         if (command != null && (
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        )) {
+                    event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                    )
+        ) {
             println("📡 [이벤트 감지] 타입: ${event.eventType}, 현재 대기 목적지: $command")
             CoroutineScope(Dispatchers.Main).launch {
                 delay(600) // 새로운 화면이 완전히 그려질 시간 대기
                 val currentCmd = pendingCommand
                 if (currentCmd != null) {
                     val success = autofillEditTextInActiveWindow(currentCmd)
+
                     if (success) {
+
                         pendingCommand = null // 타이핑 성공 시 대기 큐에서 제거
+
                         speakTts("${currentCmd}을 입력했습니다.")
+
+                        if (isAutoDestinationFlowActive) {
+
+                            CoroutineScope(Dispatchers.Main).launch {
+
+                                delay(1500)
+
+                                showAutoDestinationCandidates()
+                            }
+                        }
+
                     } else {
+
                         println("❌ [매크로 대기] 입력창 검색 실패. 다음 변경 이벤트를 기다립니다.")
                     }
+                }
+            }
+        }
+        if (
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
+
+            if (currentGuideStep == GuideStep.PLACE_SELECTION) {
+
+                val uiTreeJson = extractScreenTree()
+
+                val elements = try {
+                    Json.decodeFromString<List<UiElement>>(uiTreeJson)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+                val actionTarget =
+                    actionTargetFinder?.findPrimaryAction(elements)
+
+                if (actionTarget != null) {
+
+                    actionButtonOverlayManager?.showActionButtonHighlight(
+                        actionTarget.bounds,
+                        actionTarget.text
+                    )
+
+                    speakTts("${actionTarget.text} 버튼을 눌러주세요.")
+
+                    currentGuideStep =
+                        GuideStep.DESTINATION_BUTTON
+                }
+            }
+
+            if (currentGuideStep == GuideStep.DESTINATION_BUTTON) {
+
+                showRouteSelectionOverlay()
+
+                currentGuideStep =
+                    GuideStep.ROUTE_SELECTION
+            }
+
+            if (currentGuideStep == GuideStep.ROUTE_SELECTION) {
+
+                val uiTreeJson = extractScreenTree()
+
+                val elements = try {
+                    Json.decodeFromString<List<UiElement>>(uiTreeJson)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+                val actionTarget =
+                    actionTargetFinder?.findPrimaryAction(elements)
+
+                if (actionTarget != null) {
+
+                    actionButtonOverlayManager?.showActionButtonHighlight(
+                        actionTarget.bounds,
+                        actionTarget.text
+                    )
+
+                    speakTts("${actionTarget.text} 버튼을 눌러주세요.")
+
+                    currentGuideStep =
+                        GuideStep.START_GUIDANCE
                 }
             }
         }
@@ -456,7 +561,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
-        
+
+        if (cleanCmd.endsWith("가자")) {
+
+            val destination =
+                cleanCmd.removeSuffix("가자").trim()
+
+            if (destination.isNotBlank()) {
+
+                autoDestinationQuery = destination
+                isAutoDestinationFlowActive = true
+
+                pendingCommand = destination
+
+                speakTts("${destination}을 검색합니다.")
+
+                return true
+            }
+        }
         // [추가] Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
             startSelectionFlow(isContinuation = false)
@@ -464,7 +586,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         val isAppOpenCmd =
             cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") ||
-            cleanCmd.contains("보여줘")
+                    cleanCmd.contains("보여줘")
 
         if (!isAppOpenCmd) return false
         val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
@@ -549,10 +671,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
                     speakTts(response.ttsMessage, utteranceId)
-                    
+
                     // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
                     val highlightColor = if (response.actionType == "ASK_USER") Color.YELLOW else Color.RED
-                    
+
                     response.targetBounds?.let { bounds ->
                         showTargetHighlight(bounds, response.ttsMessage, highlightColor)
                     }
@@ -600,7 +722,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         } else {
                             cleanSearchQuery(command)
                         }
-                        
+
                         response.targetBounds?.let { bounds ->
                             CoroutineScope(Dispatchers.Main).launch {
                                 delay(1000)
@@ -701,11 +823,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun attemptScrollForward(): Boolean {
         val rootNode = rootInActiveWindow ?: return false
-        
+
         val queue = mutableListOf(rootNode)
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
-            
+
             // 스크롤 가능하며, 전방 스크롤(ACTION_SCROLL_FORWARD) 액션을 지원하는지 확인
             if (node.isScrollable && node.actionList.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)) {
                 val scrolled = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
@@ -716,12 +838,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     return true
                 }
             }
-            
+
             for (i in 0 until node.childCount) {
                 node.getChild(i)?.let { queue.add(it) }
             }
         }
-        
+
         speakTts("더 이상 넘길 화면이 없습니다.")
         return false
     }
@@ -730,6 +852,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         if (!isContinuation) {
             visitedCandidateTexts.clear()
         }
+        currentGuideStep = GuideStep.PLACE_SELECTION
 
         val uiTreeJson = extractScreenTree()
         val elements = try {
@@ -745,24 +868,108 @@ class TalkTiAccessibilityService : AccessibilityService() {
         candidates.forEach { visitedCandidateTexts.add(it.text) }
 
         if (candidates.isNotEmpty()) {
-            val session = SelectionSession(
-                sessionId = "session_${System.currentTimeMillis()}",
-                question = "원하시는 항목을 말씀해주세요.",
-                candidates = candidates
-            )
-            
-            selectionManager.startSession(session)
-            
-            val currentCandidate = selectionManager.getCurrentCandidate()
-            if (currentCandidate != null) {
-                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
-                speakTts(prompt, "talkti_selection_ask")
-                showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
+            candidateOverlayManager?.showCandidates(candidates) { selectedCandidate ->
+
+                Log.d(
+                    "TalkTiService",
+                    "Selected Candidate overlay touched: ${selectedCandidate.id} - ${selectedCandidate.text}"
+                )
+
+
+                val currentUiTree = extractScreenTree()
+
+                val currentElements = try {
+                    Json.decodeFromString<List<UiElement>>(currentUiTree)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+                val actionTarget =
+                    actionTargetFinder?.findPrimaryAction(currentElements)
+
+                if (actionTarget != null) {
+
+                    actionButtonOverlayManager?.showActionButtonHighlight(
+                        actionTarget.bounds,
+                        actionTarget.text
+                    ) {
+                        showRouteSelectionOverlay()
+                    }
+
+                    speakTts("${actionTarget.text} 버튼을 눌러주세요.")
+
+                } else {
+
+                    speakTts("도착 버튼을 찾을 수 없습니다.")
+
+                }
             }
         } else {
             speakTts("더 이상 새로운 항목이 없습니다.")
         }
     }
+    private fun showAutoDestinationCandidates() {
+
+        val uiTreeJson = extractScreenTree()
+
+        val elements = try {
+            Json.decodeFromString<List<UiElement>>(uiTreeJson)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val candidates =
+            candidateExtractor.extractCandidates(elements)
+
+        if (candidates.isEmpty()) {
+
+            speakTts("목적지를 찾을 수 없습니다.")
+
+            return
+        }
+
+        candidateOverlayManager?.showCandidates(candidates) { selectedCandidate ->
+
+            performImmediateActionClick(
+                selectedCandidate.bounds
+            )
+
+            speakTts("${selectedCandidate.text} 선택됨")
+
+            currentGuideStep =
+                GuideStep.PLACE_SELECTION
+
+            isAutoDestinationFlowActive = false
+        }
+
+        speakTts("목적지를 선택해주세요.")
+    }
+    private fun showRouteSelectionOverlay() {
+
+        val currentUiTree = extractScreenTree()
+
+        val currentElements = try {
+            Json.decodeFromString<List<UiElement>>(currentUiTree)
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val routeCandidates =
+            routeCandidateFinder?.findRouteCandidates(currentElements)
+                ?: emptyList()
+
+        if (routeCandidates.isEmpty()) {
+            speakTts("경로를 찾을 수 없습니다.")
+            return
+        }
+
+        candidateOverlayManager?.showCandidates(routeCandidates) {
+            speakTts(
+                "추천 경로로 가시려면 첫 번째 경로를 눌러주세요. 다른 경로를 원하시면 원하는 경로를 눌러주세요."
+            )
+        }
+    }
+
 
     override fun onDestroy() {
         super.onDestroy()
@@ -773,6 +980,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech?.shutdown()
         removeTargetHighlight()
         floatingMenuManager?.hide()
+        candidateOverlayManager?.clearOverlays()
+        actionButtonOverlayManager?.clearHighlight()
     }
 
     private fun extractScreenTree(): String {
@@ -819,14 +1028,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 traverse(window.root)
             }
         }
-        
+
         return Json.encodeToString(elements)
     }
 
     private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
         Log.d(TAG, "showTargetHighlight: bounds=$bounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        
+
         // 메인 스레드에서 UI 작업을 보장
         CoroutineScope(Dispatchers.Main).launch {
             removeTargetHighlight()
@@ -843,22 +1052,22 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 (bounds.right - bounds.left).coerceAtLeast(10),
                 (bounds.bottom - bounds.top).coerceAtLeast(10),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 x = bounds.left
                 y = bounds.top
-                
+
                 // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
                 }
             }
-            
+
             try {
                 highlightView = highlight
                 windowManager.addView(highlightView, params)
@@ -1007,4 +1216,5 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .replace("으로", "")
             .trim()
     }
+
 }
