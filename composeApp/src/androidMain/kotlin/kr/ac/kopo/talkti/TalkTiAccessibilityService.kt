@@ -295,12 +295,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    private fun openAppByName(appNameOrPackage: String): String? {
+    private fun openAppByName(appNameOrPackage: String, searchQuery: String? = null): String? {
         val pm = packageManager
-        Log.d(TAG, "openAppByName 호출: $appNameOrPackage")
+        Log.d(TAG, "openAppByName 호출: $appNameOrPackage, searchQuery: $searchQuery")
 
         // 1. 패키지명으로 직접 실행 시도 (LLM이 패키지명을 보낸 경우)
         try {
+            if (isMapPackage(appNameOrPackage) && !searchQuery.isNullOrBlank()) {
+                val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
+                if (launched) return appNameOrPackage
+            }
             val intent = pm.getLaunchIntentForPackage(appNameOrPackage)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -323,6 +327,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "앨범" to listOf("com.sec.android.gallery3d"),
             "찍은거" to listOf("com.sec.android.gallery3d"),
             //지도
+            "지도" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "길찾기" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "네비" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "내비게이션" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
@@ -380,6 +385,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 }
 
                 if (installedPackage != null) {
+                    if (isMapPackage(installedPackage) && !searchQuery.isNullOrBlank()) {
+                        val launched = launchMapWithDeepLink(installedPackage, searchQuery)
+                        if (launched) return installedPackage
+                    }
                     val intent = pm.getLaunchIntentForPackage(installedPackage)
                     if (intent != null) {
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -401,6 +410,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (cleanLabel.length >= 2 && (cleanCmd.contains(cleanLabel) || cleanLabel.contains(cleanCmd))) {
                 val intent = pm.getLaunchIntentForPackage(appInfo.packageName)
                 if (intent != null) {
+                    if (isMapPackage(appInfo.packageName) && !searchQuery.isNullOrBlank()) {
+                        val launched = launchMapWithDeepLink(appInfo.packageName, searchQuery)
+                        if (launched) return appInfo.packageName
+                    }
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
                     speakTts("${appLabel}을 실행합니다.")
@@ -409,6 +422,35 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
         return null
+    }
+
+    private fun isMapPackage(packageName: String): Boolean {
+        return packageName == "net.daum.android.map" || packageName == "com.nhn.android.nmap"
+    }
+
+    private fun launchMapWithDeepLink(packageName: String, query: String): Boolean {
+        return try {
+            val uri = when (packageName) {
+                "net.daum.android.map" -> android.net.Uri.parse("kakaomap://search?q=" + android.net.Uri.encode(query))
+                "com.nhn.android.nmap" -> android.net.Uri.parse("nmap://search?query=" + android.net.Uri.encode(query))
+                else -> null
+            }
+
+            if (uri == null) {
+                false
+            } else {
+                val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                val appLabel = if (packageName == "net.daum.android.map") "카카오맵" else "네이버지도"
+                speakTts("${appLabel}에서 ${query}을 검색합니다.")
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "딥링크 실행 실패: ${e.message}")
+            false
+        }
     }
 
     private fun processLocalCommand(command: String): Boolean {
@@ -424,7 +466,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             cleanCmd.contains("보여줘")
 
         if (!isAppOpenCmd) return false
-        val launchedPkg = openAppByName(cleanCmd)
+        val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
         if (launchedPkg != null) {
             errorHandlingManager.onGuideStarted(launchedPkg, command)
             return true
@@ -515,7 +557,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
                         if (targetId != null) {
-                            val launchedPkg = openAppByName(targetId)
+                            val query = if (!response.actionArguments.isNullOrBlank()) {
+                                response.actionArguments
+                            } else {
+                                cleanSearchQuery(command)
+                            }
+                            val launchedPkg = openAppByName(targetId, query)
                             if (launchedPkg != null) {
                                 errorHandlingManager.onGuideStarted(launchedPkg, command)
                             }
@@ -940,6 +987,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun cleanSearchQuery(command: String): String {
         return command
+            .replace(".", "")
+            .replace(",", "")
+            .replace("으로 가줘", "")
+            .replace("으로가줘", "")
             .replace("택시 타고", "")
             .replace("택시 불러줘", "")
             .replace("길찾기", "")
@@ -947,6 +998,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .replace("가줘", "")
             .replace("갈래", "")
             .replace("가자", "")
+            .replace("으로", "")
             .trim()
     }
 }

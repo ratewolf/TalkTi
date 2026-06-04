@@ -71,7 +71,7 @@ object PromptTemplates {
         {
           "candidateId": "UI 요소의 candidateId 또는 실행할 앱의 packageName (해당 없을 경우 null)",
           "actionType": "행동 유형 (CLICK, ASK_USER, ACTION_SET_TEXT, OPEN_APP)",
-          "arguments": "입력할 텍스트 (텍스트 입력 시 사용, 그 외 생략)",
+          "arguments": "입력할 텍스트 (텍스트 입력 시 사용, 그 외 생략. 주의: 사용자 발화에서 '가줘', '검색해줘', '으로', '가고 싶어' 등 불필요한 조사와 어미, 동사를 완벽히 제거하고 '삼성병원', '강남역' 같이 실제 입력창에 검색할 정제된 키워드/명칭만 추출해서 넣으세요.)",
           "ttsMessage": "어르신께 읽어드릴 음성 안내",
           "confidence": 확신도 (0.0 ~ 1.0)
         }
