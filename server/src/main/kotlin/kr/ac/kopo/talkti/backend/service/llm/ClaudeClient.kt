@@ -22,7 +22,7 @@ class ClaudeClient(
 
     private val json = Json { 
         ignoreUnknownKeys = true
-        encodeDefaults = true 
+        encodeDefaults = false // 기본값(null 등)은 인코딩하지 않음
     }
 
     @Serializable
