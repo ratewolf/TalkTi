@@ -1077,7 +1077,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
 
             highlightJob = launch {
-                delay(7000) // 좀 더 길게 유지 (7초)
+                delay(3000) // 3초간 유지 후 제거
                 removeTargetHighlight()
             }
         }

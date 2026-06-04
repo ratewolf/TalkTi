@@ -135,7 +135,7 @@ private fun TalkTiHomeScreen(
             )
         ) {
             Text(
-                text = if (isOverlayEnabled) "오버레이 끄기" else "오버레이 켜기",
+                text = if (isOverlayEnabled) "오버레이 꺼짐" else "오버레이 켜짐",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
