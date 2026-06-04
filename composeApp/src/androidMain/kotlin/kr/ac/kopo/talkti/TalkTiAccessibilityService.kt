@@ -52,6 +52,7 @@ import kr.ac.kopo.talkti.app.overlay.FloatingMenuManager
 import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
 import kr.ac.kopo.talkti.models.RouteCandidateFinder
+import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -85,6 +86,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var actionButtonOverlayManager: ActionButtonOverlayManager? = null
     private var actionTargetFinder : ActionTargetFinder? = null
     private var routeCandidateFinder : RouteCandidateFinder? = null
+
+    // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
+    private val errorHandlingManager = ErrorHandlingManager()
+
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
 
@@ -102,6 +107,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private var currentGuideStep = GuideStep.NONE
+    private var llmJob: Job? = null
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -125,6 +131,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
         actionButtonOverlayManager = ActionButtonOverlayManager(this)
         actionTargetFinder = ActionTargetFinder()
         routeCandidateFinder = RouteCandidateFinder()
+
+        // 예외 처리 매니저 초기화
+        errorHandlingManager.initialize(this, textToSpeech)
+        errorHandlingManager.onTerminateListener = {
+            // 가이드 종료 시 서비스 상태 초기화
+            pendingCommand = null
+            removeTargetHighlight()
+        }
     }
 
     private fun setupFloatingMenu() {
@@ -139,12 +153,37 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val intent = packageManager.getLaunchIntentForPackage(packageName)
                 intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-            }
+            },
+            onLongClick = { showTerminationDialog() }
         )
         floatingMenuManager?.show()
     }
 
+    private fun showTerminationDialog() {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("TalkTi 종료")
+            .setMessage("똑띠 서비스를 종료하시겠습니까?")
+            .setPositiveButton("종료") { _, _ ->
+                disableSelf()
+            }
+            .setNegativeButton("취소", null)
+            .create()
+
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
+    }
+
     private fun startAppGuide() {
+        // [추가] LLM 대기 중 버튼 누르면 취소 처리
+        if (LlmLoadingOverlay.isShowing) {
+            llmJob?.cancel()
+            llmJob = null
+            LlmLoadingOverlay.hide()
+            floatingMenuManager?.updateLoadingStatus(false)
+            speakTts("요청을 취소했습니다.")
+            return
+        }
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
@@ -252,6 +291,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // ── 예외 처리 인터셉터: 팝업/이탈/타이머 검사를 기존 로직보다 먼저 수행 ──
+        if (errorHandlingManager.interceptEvent(event)) return
+
         val command = pendingCommand
         if (command != null && (
                     event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
@@ -359,19 +401,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    private fun openAppByName(appNameOrPackage: String): Boolean {
+    private fun openAppByName(appNameOrPackage: String, searchQuery: String? = null): String? {
         val pm = packageManager
-        Log.d(TAG, "openAppByName 호출: $appNameOrPackage")
+        Log.d(TAG, "openAppByName 호출: $appNameOrPackage, searchQuery: $searchQuery")
 
         // 1. 패키지명으로 직접 실행 시도 (LLM이 패키지명을 보낸 경우)
         try {
+            if (isMapPackage(appNameOrPackage) && !searchQuery.isNullOrBlank()) {
+                val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
+                if (launched) return appNameOrPackage
+            }
             val intent = pm.getLaunchIntentForPackage(appNameOrPackage)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
                 val appLabel = pm.getApplicationLabel(pm.getApplicationInfo(appNameOrPackage, 0))
                 speakTts("${appLabel} 앱을 실행합니다.")
-                return true
+                return appNameOrPackage
             }
         } catch (e: Exception) {
             // 패키지명이 아닌 경우 아래의 검색 로직으로 진행
@@ -408,6 +454,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "카톡" to listOf("com.kakao.talk"),
             "카카오톡" to listOf("com.kakao.talk"),
             "네이버" to listOf("com.nhn.android.search", "com.nhn.android.nmap"),
+            "당근마켓" to listOf("com.towneers.www"),
+            "당근" to listOf("com.towneers.www"),
+            "중고거래" to listOf("com.towneers.www"),
             //유튜브
             "유튜브" to listOf("com.google.android.youtube"),
             "유튭" to listOf("com.google.android.youtube"),
@@ -417,7 +466,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "만보기" to listOf("com.sec.android.app.shealth"),
             "걷기" to listOf("com.sec.android.app.shealth"),
             "설정" to listOf("com.android.settings"),
-            "톱니바퀴" to listOf("com.android.settings")
+            "톱니바퀴" to listOf("com.android.settings"),
+            //배달
+            "배달앱" to listOf("woowahan.baemin","com.coupang.mobile.eats"),
+            "배달의민족" to listOf("woowahan.baemin"),
+            "배민" to listOf("woowahan.baemin"),
+            "쿠팡이츠" to listOf("com.coupang.mobile.eats"),
+            "쿠팡배달" to listOf("com.coupang.mobile.eats"),
+            "쿠팡음식" to listOf("com.coupang.mobile.eats")
+
         )
 
         //별칭 검색 및 실행 로직 (양방향 매칭 적용)
@@ -434,12 +491,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 }
 
                 if (installedPackage != null) {
+                    if (isMapPackage(installedPackage) && !searchQuery.isNullOrBlank()) {
+                        val launched = launchMapWithDeepLink(installedPackage, searchQuery)
+                        if (launched) return installedPackage
+                    }
                     val intent = pm.getLaunchIntentForPackage(installedPackage)
                     if (intent != null) {
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         startActivity(intent)
                         speakTts("${alias}를 실행합니다.")
-                        return true
+                        return installedPackage
                     }
                 }
             }
@@ -455,14 +516,47 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (cleanLabel.length >= 2 && (cleanCmd.contains(cleanLabel) || cleanLabel.contains(cleanCmd))) {
                 val intent = pm.getLaunchIntentForPackage(appInfo.packageName)
                 if (intent != null) {
+                    if (isMapPackage(appInfo.packageName) && !searchQuery.isNullOrBlank()) {
+                        val launched = launchMapWithDeepLink(appInfo.packageName, searchQuery)
+                        if (launched) return appInfo.packageName
+                    }
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
                     speakTts("${appLabel}을 실행합니다.")
-                    return true
+                    return appInfo.packageName
                 }
             }
         }
-        return false
+        return null
+    }
+
+    private fun isMapPackage(packageName: String): Boolean {
+        return packageName == "net.daum.android.map" || packageName == "com.nhn.android.nmap"
+    }
+
+    private fun launchMapWithDeepLink(packageName: String, query: String): Boolean {
+        return try {
+            val uri = when (packageName) {
+                "net.daum.android.map" -> android.net.Uri.parse("kakaomap://search?q=" + android.net.Uri.encode(query))
+                "com.nhn.android.nmap" -> android.net.Uri.parse("nmap://search?query=" + android.net.Uri.encode(query))
+                else -> null
+            }
+
+            if (uri == null) {
+                false
+            } else {
+                val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                val appLabel = if (packageName == "net.daum.android.map") "카카오맵" else "네이버지도"
+                speakTts("${appLabel}에서 ${query}을 검색합니다.")
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "딥링크 실행 실패: ${e.message}")
+            false
+        }
     }
 
     private fun processLocalCommand(command: String): Boolean {
@@ -495,7 +589,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     cleanCmd.contains("보여줘")
 
         if (!isAppOpenCmd) return false
-        return openAppByName(cleanCmd)
+        val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
+        if (launchedPkg != null) {
+            errorHandlingManager.onGuideStarted(launchedPkg, command)
+            return true
+        }
+        return false
     }
 
     fun captureScreenForLLM(userCommand: String) {
@@ -547,7 +646,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
 
-        CoroutineScope(Dispatchers.IO).launch {
+        llmJob = CoroutineScope(Dispatchers.IO).launch {
+            withContext(Dispatchers.Main) {
+                LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+                floatingMenuManager?.bringToFront()
+                floatingMenuManager?.updateLoadingStatus(true)
+                speakTts("어떻게 도와드릴지 찾고 있어요. 잠시만 기다려주세요.")
+            }
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
                     contentType(ContentType.Application.Json)
@@ -562,6 +667,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
+                    floatingMenuManager?.updateLoadingStatus(false)
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
                     speakTts(response.ttsMessage, utteranceId)
@@ -577,8 +683,26 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
                         if (targetId != null) {
-                            openAppByName(targetId)
+                            val query = if (!response.actionArguments.isNullOrBlank()) {
+                                response.actionArguments
+                            } else {
+                                cleanSearchQuery(command)
+                            }
+                            val launchedPkg = openAppByName(targetId, query)
+                            if (launchedPkg != null) {
+                                errorHandlingManager.onGuideStarted(launchedPkg, command)
+                            }
                         }
+                    } else {
+                        // OPEN_APP이 아닐 때는 가이드 시작 전 현재 패키지를 타겟으로 설정
+                        val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                        if (currentPkg.isNotBlank()) {
+                            errorHandlingManager.onGuideStarted(currentPkg, command)
+                        }
+                    }
+
+                    if (response.actionType == "OPEN_APP") {
+                        // OPEN_APP 처리는 이미 위에서 완료
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
                         println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
                         response.targetBounds?.let { bounds ->
@@ -613,7 +737,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
                 withContext(Dispatchers.Main) {
+                    floatingMenuManager?.updateLoadingStatus(false)
                     Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    floatingMenuManager?.updateLoadingStatus(false)
+                    LlmLoadingOverlay.hide()
                 }
             }
         }
@@ -844,6 +974,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        errorHandlingManager.destroy() // 예외 처리 매니저 리소스 정리
         speechRecognizer?.destroy()
         textToSpeech?.stop()
         textToSpeech?.shutdown()
@@ -1071,6 +1202,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun cleanSearchQuery(command: String): String {
         return command
+            .replace(".", "")
+            .replace(",", "")
+            .replace("으로 가줘", "")
+            .replace("으로가줘", "")
             .replace("택시 타고", "")
             .replace("택시 불러줘", "")
             .replace("길찾기", "")
@@ -1078,6 +1213,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .replace("가줘", "")
             .replace("갈래", "")
             .replace("가자", "")
+            .replace("으로", "")
             .trim()
     }
 

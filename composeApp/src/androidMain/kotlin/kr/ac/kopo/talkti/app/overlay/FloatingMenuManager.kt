@@ -25,7 +25,8 @@ class FloatingMenuManager(
     // 기존 호출부와의 호환성을 위해 유지합니다.
     private val onTextInputClick: () -> Unit = {},
     private val onKioskModeClick: () -> Unit = {},
-    private val onOpenAppClick: () -> Unit = {}
+    private val onOpenAppClick: () -> Unit = {},
+    private val onLongClick: () -> Unit = {}
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var rootLayout: LinearLayout? = null
@@ -43,6 +44,7 @@ class FloatingMenuManager(
     }
 
     private var mainButton: ImageView? = null
+    private var isProcessing = false
 
     fun show() {
         if (rootLayout != null) return
@@ -58,7 +60,7 @@ class FloatingMenuManager(
         // 메인 마이크 버튼
         mainButton = createCircleButton(
             iconRes = R.drawable.ic_mic,
-            sizeDp = 60,
+            sizeDp = 70, // 크기를 60에서 70으로 키움
             backgroundColor = Color.parseColor("#FFE000"), // 카카오 느낌의 노란색
             iconTint = Color.BLACK
         ).apply {
@@ -68,6 +70,11 @@ class FloatingMenuManager(
                 private var initialTouchX = 0f
                 private var initialTouchY = 0f
                 private var isMoving = false
+                private var isLongPress = false
+                private val longPressRunnable = Runnable {
+                    isLongPress = true
+                    onLongClick()
+                }
 
                 override fun onTouch(v: View, event: MotionEvent): Boolean {
                     when (event.action) {
@@ -77,6 +84,8 @@ class FloatingMenuManager(
                             initialTouchX = event.rawX
                             initialTouchY = event.rawY
                             isMoving = false
+                            isLongPress = false
+                            v.postDelayed(longPressRunnable, 800) // 0.8초 롱클릭
                             v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(100).start()
                             return true
                         }
@@ -87,6 +96,7 @@ class FloatingMenuManager(
 
                             if (abs(dx) > 10 || abs(dy) > 10) {
                                 isMoving = true
+                                v.removeCallbacks(longPressRunnable)
                                 params.x = initialX + dx
                                 params.y = initialY + dy
                                 windowManager.updateViewLayout(rootLayout, params)
@@ -95,14 +105,16 @@ class FloatingMenuManager(
                         }
 
                         MotionEvent.ACTION_UP -> {
+                            v.removeCallbacks(longPressRunnable)
                             v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(100).start()
-                            if (!isMoving) {
+                            if (!isMoving && !isLongPress) {
                                 v.performClick()
                                 onAppGuideClick() 
                             }
                             return true
                         }
                         MotionEvent.ACTION_CANCEL -> {
+                            v.removeCallbacks(longPressRunnable)
                             v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(100).start()
                             return true
                         }
@@ -119,6 +131,8 @@ class FloatingMenuManager(
     private var pulseAnimation: Animation? = null
 
     fun updateMainButtonStatus(isListening: Boolean) {
+        if (isProcessing) return // 로딩 중일 때는 음성 인식 상태 업데이트 무시
+
         mainButton?.post {
             if (isListening) {
                 updateCircleColor(mainButton, Color.parseColor("#FF5252")) // 빨간색으로 변경
@@ -143,8 +157,36 @@ class FloatingMenuManager(
         }
     }
 
+    fun updateLoadingStatus(isLoading: Boolean) {
+        isProcessing = isLoading
+        mainButton?.post {
+            if (isLoading) {
+                mainButton?.clearAnimation()
+                // 중지/취소 느낌을 주기 위해 어두운 회색 배경에 흰색 아이콘으로 변경
+                updateCircleColor(mainButton, Color.parseColor("#757575")) 
+                mainButton?.setColorFilter(Color.WHITE)
+                // 아이콘을 살짝 돌리거나 해서 변화를 줌 (선택사항)
+                mainButton?.rotation = 45f 
+            } else {
+                mainButton?.rotation = 0f
+                updateCircleColor(mainButton, Color.parseColor("#FFE000"))
+                mainButton?.setColorFilter(Color.BLACK)
+            }
+        }
+    }
+
     private fun updateCircleColor(view: View?, color: Int) {
         (view?.background as? GradientDrawable)?.setColor(color)
+    }
+
+    fun bringToFront() {
+        rootLayout?.let {
+            try {
+                windowManager.removeView(it)
+                windowManager.addView(it, params)
+            } catch (e: Exception) {
+            }
+        }
     }
 
     fun hide() {
@@ -168,7 +210,7 @@ class FloatingMenuManager(
             setColorFilter(iconTint)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             
-            val padding = dp(16)
+            val padding = dp(12) // 패딩을 16에서 12로 줄여 아이콘을 더 크게 보이게 함
             setPadding(padding, padding, padding, padding)
             
             background = createCircleDrawable(backgroundColor)
