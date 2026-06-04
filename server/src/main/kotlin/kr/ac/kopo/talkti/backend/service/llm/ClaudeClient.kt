@@ -22,7 +22,8 @@ class ClaudeClient(
 
     private val json = Json { 
         ignoreUnknownKeys = true
-        encodeDefaults = false // 기본값(null 등)은 인코딩하지 않음
+        encodeDefaults = true // 기본값을 항상 포함 (type="base64" 등 필수 필드 유지)
+        explicitNulls = false // null인 필드는 JSON에서 아예 제외 (text: null 방지)
     }
 
     @Serializable
