@@ -157,6 +157,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             llmJob?.cancel()
             llmJob = null
             LlmLoadingOverlay.hide()
+            floatingMenuManager?.updateLoadingStatus(false)
             speakTts("요청을 취소했습니다.")
             return
         }
@@ -526,6 +527,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         llmJob = CoroutineScope(Dispatchers.IO).launch {
             withContext(Dispatchers.Main) {
                 LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+                floatingMenuManager?.bringToFront()
+                floatingMenuManager?.updateLoadingStatus(true)
                 speakTts("어떻게 도와드릴지 찾고 있어요. 잠시만 기다려주세요.")
             }
             try {
@@ -542,6 +545,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
+                    floatingMenuManager?.updateLoadingStatus(false)
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
                     speakTts(response.ttsMessage, utteranceId)
@@ -611,10 +615,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
             } catch (e: Exception) {
                 Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
                 withContext(Dispatchers.Main) {
+                    floatingMenuManager?.updateLoadingStatus(false)
                     Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             } finally {
                 withContext(Dispatchers.Main) {
+                    floatingMenuManager?.updateLoadingStatus(false)
                     LlmLoadingOverlay.hide()
                 }
             }

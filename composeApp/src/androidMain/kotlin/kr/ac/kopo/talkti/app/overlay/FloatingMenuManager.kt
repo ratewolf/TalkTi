@@ -44,6 +44,7 @@ class FloatingMenuManager(
     }
 
     private var mainButton: ImageView? = null
+    private var isProcessing = false
 
     fun show() {
         if (rootLayout != null) return
@@ -130,6 +131,8 @@ class FloatingMenuManager(
     private var pulseAnimation: Animation? = null
 
     fun updateMainButtonStatus(isListening: Boolean) {
+        if (isProcessing) return // 로딩 중일 때는 음성 인식 상태 업데이트 무시
+
         mainButton?.post {
             if (isListening) {
                 updateCircleColor(mainButton, Color.parseColor("#FF5252")) // 빨간색으로 변경
@@ -154,8 +157,36 @@ class FloatingMenuManager(
         }
     }
 
+    fun updateLoadingStatus(isLoading: Boolean) {
+        isProcessing = isLoading
+        mainButton?.post {
+            if (isLoading) {
+                mainButton?.clearAnimation()
+                // 중지/취소 느낌을 주기 위해 어두운 회색 배경에 흰색 아이콘으로 변경
+                updateCircleColor(mainButton, Color.parseColor("#757575")) 
+                mainButton?.setColorFilter(Color.WHITE)
+                // 아이콘을 살짝 돌리거나 해서 변화를 줌 (선택사항)
+                mainButton?.rotation = 45f 
+            } else {
+                mainButton?.rotation = 0f
+                updateCircleColor(mainButton, Color.parseColor("#FFE000"))
+                mainButton?.setColorFilter(Color.BLACK)
+            }
+        }
+    }
+
     private fun updateCircleColor(view: View?, color: Int) {
         (view?.background as? GradientDrawable)?.setColor(color)
+    }
+
+    fun bringToFront() {
+        rootLayout?.let {
+            try {
+                windowManager.removeView(it)
+                windowManager.addView(it, params)
+            } catch (e: Exception) {
+            }
+        }
     }
 
     fun hide() {
