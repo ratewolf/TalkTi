@@ -14,7 +14,7 @@ import java.time.Duration
  */
 class ClaudeClient(
     private val apiKey: String = ConfigLoader.get("CLAUDE_API_KEY"),
-    private val model: String = ConfigLoader.get("CLAUDE_MODEL", "claude-3-5-sonnet-20240620")
+    private val model: String = ConfigLoader.get("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
 ) {
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(30))
