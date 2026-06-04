@@ -104,7 +104,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        Log.d(TAG, "접근성 서비스 연결됨 - 플로팅 메뉴 생성 시작")
+        Log.d(TAG, "==== 접근성 서비스 연결됨 (V2 - UI 개선 적용됨) ====")
         initSpeechRecognizer()
         initTextToSpeech()
         setupFloatingMenu()
@@ -215,6 +215,29 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 textToSpeech?.setLanguage(java.util.Locale.KOREAN)
+                Log.d(TAG, "TTS 초기화 성공")
+                
+                textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        Log.d(TAG, "TTS 시작: $utteranceId")
+                    }
+                    override fun onDone(utteranceId: String?) {
+                        Log.d(TAG, "TTS 종료: $utteranceId")
+                        if (utteranceId == "talkti_selection_ask") {
+                            // TTS가 끝난 후 음성 인식을 재개합니다.
+                            CoroutineScope(Dispatchers.Main).launch {
+                                delay(500) // 안정성을 위해 약간의 지연
+                                Log.d(TAG, "음성 인식 재개 시도 (utteranceId=$utteranceId)")
+                                startAppGuide()
+                            }
+                        }
+                    }
+                    override fun onError(utteranceId: String?) {
+                        Log.e(TAG, "TTS 에러: $utteranceId")
+                    }
+                })
+            } else {
+                Log.e(TAG, "TTS 초기화 실패: status=$status")
             }
         }
     }
@@ -448,7 +471,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
-                    speakTts(response.ttsMessage)
+                    // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
+                    val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
+                    speakTts(response.ttsMessage, utteranceId)
+                    
+                    // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
+                    val highlightColor = if (response.actionType == "ASK_USER") Color.YELLOW else Color.RED
+                    
+                    response.targetBounds?.let { bounds ->
+                        showTargetHighlight(bounds, response.ttsMessage, highlightColor)
+                    }
 
                     if (response.actionType == "OPEN_APP") {
                         val targetId = response.targetCandidateId
@@ -470,39 +502,34 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     if (response.actionType == "OPEN_APP") {
                         // OPEN_APP 처리는 이미 위에서 완료
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
-                        println("즉시 자동 텍스트 입력 실행: ${response.actionArguments}")
+                        println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
                         response.targetBounds?.let { bounds ->
-                            val success = performImmediateActionSetText(bounds, response.actionArguments!!)
-                            if (!success) {
-                                println("즉시 입력 실패! 가짜 입력창으로 판단되어 자동 클릭 및 매크로 대기열을 가동합니다.")
-                                pendingCommand = response.actionArguments!!
-                                val clickSuccess = performImmediateActionClick(bounds)
-                                if (!clickSuccess) {
-                                    println("클릭 우회마저 실패하여 노란색 가이드로 우회합니다.")
-                                    showTargetHighlight(bounds, response.ttsMessage)
+                            CoroutineScope(Dispatchers.Main).launch {
+                                delay(1000)
+                                val success = performImmediateActionSetText(bounds, response.actionArguments!!)
+                                if (!success) {
+                                    pendingCommand = response.actionArguments!!
+                                    performImmediateActionClick(bounds)
                                 }
                             }
                         }
                     } else if (response.actionType == "CLICK") {
-                        println("즉시 자동 클릭 실행")
+                        println("자동 클릭 예약 실행")
                         val targetText = if (!response.actionArguments.isNullOrBlank()) {
                             response.actionArguments!!
                         } else {
                             cleanSearchQuery(command)
                         }
-                        pendingCommand = targetText
-                        println("화면 전환 대기 목적지 설정: $targetText")
-
+                        
                         response.targetBounds?.let { bounds ->
-                            val success = performImmediateActionClick(bounds)
-                            if (!success) {
-                                println("즉시 클릭 실패, 노란색 가이드로 우회합니다.")
-                                showTargetHighlight(bounds, response.ttsMessage)
+                            CoroutineScope(Dispatchers.Main).launch {
+                                delay(1000)
+                                val success = performImmediateActionClick(bounds)
+                                if (success) {
+                                    pendingCommand = targetText
+                                }
                             }
                         }
-                    } else if (isValidGuideResponse(response, screenSessionId)) {
-                        println("클릭 명령이 아닌 ttsMessage 반환")
-                        response.targetBounds?.let { showTargetHighlight(it, response.ttsMessage) }
                     }
                 }
             } catch (e: Exception) {
@@ -514,8 +541,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun speakTts(message: String) {
-        textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "talkti_tts")
+    private fun speakTts(message: String, utteranceId: String = "talkti_tts") {
+        Log.d(TAG, "speakTts(msg='$message', id='$utteranceId')")
+        val params = Bundle()
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+        val result = textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            Log.e(TAG, "speakTts 호출 실패")
+        }
     }
 
     private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
@@ -537,8 +570,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
         if (response == UserResponse.UNKNOWN) {
             val currentCandidate = selectionManager.getCurrentCandidate()
             if (currentCandidate != null) {
-                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
-                speakTts(prompt)
+                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
+                speakTts(prompt, "talkti_selection_ask")
+                showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
             }
             return
         }
@@ -550,20 +584,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val candidate = flow.selected
                 val ttsMessage = "${candidate.text} 선택이 완료되었습니다."
                 speakTts(ttsMessage)
-                showTargetHighlight(candidate.bounds, ttsMessage)
+                showTargetHighlight(candidate.bounds, ttsMessage, Color.RED)
             }
             is SelectionFlow.AwaitingVoice -> {
                 val currentCandidate = selectionManager.getCurrentCandidate()
                 if (currentCandidate != null) {
-                    val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
-                    speakTts(prompt)
+                    val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
+                    speakTts(prompt, "talkti_selection_ask")
+                    showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
                 }
             }
             is SelectionFlow.Cancelled -> {
                 speakTts("선택이 취소되었습니다.")
+                removeTargetHighlight()
             }
             is SelectionFlow.CandidatesExhausted -> {
                 speakTts("화면의 모든 항목을 확인했습니다. 다음 화면을 탐색합니다.")
+                removeTargetHighlight()
                 val scrolled = attemptScrollForward()
                 if (scrolled) {
                     CoroutineScope(Dispatchers.Main).launch {
@@ -632,8 +669,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             
             val currentCandidate = selectionManager.getCurrentCandidate()
             if (currentCandidate != null) {
-                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate)
-                speakTts(prompt)
+                val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
+                speakTts(prompt, "talkti_selection_ask")
+                showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
             }
         } else {
             speakTts("더 이상 새로운 항목이 없습니다.")
@@ -652,77 +690,101 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun extractScreenTree(): String {
-        val rootNode = rootInActiveWindow ?: return "[]"
         val elements = mutableListOf<UiElement>()
         var candidateCounter = 0
 
         fun traverse(node: AccessibilityNodeInfo?) {
             if (node == null) return
             if (node.isVisibleToUser) {
-                val text = node.text?.toString() ?: ""
-                val contentDescription = node.contentDescription?.toString() ?: ""
-                val id = node.viewIdResourceName ?: "no_id"
-                val className = node.className?.toString() ?: "no_class"
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
 
-                if (text.isNotBlank() || contentDescription.isNotBlank() || node.isClickable) {
-                    val rect = Rect()
-                    node.getBoundsInScreen(rect)
-                    elements.add(UiElement(
-                        candidateId = "candidate_${candidateCounter++}",
-                        text = text,
-                        contentDescription = contentDescription,
-                        id = id,
-                        className = className,
-                        bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom),
-                        clickable = node.isClickable,
-                        enabled = node.isEnabled,
-                        visibleToUser = node.isVisibleToUser
-                    ))
+                // 유효한 크기를 가진 노드만 수집
+                if (rect.width() > 0 && rect.height() > 0) {
+                    val text = node.text?.toString() ?: ""
+                    val contentDescription = node.contentDescription?.toString() ?: ""
+                    val id = node.viewIdResourceName ?: "no_id"
+                    val className = node.className?.toString() ?: "no_class"
+
+                    if (text.isNotBlank() || contentDescription.isNotBlank() || node.isClickable) {
+                        elements.add(UiElement(
+                            candidateId = "candidate_${candidateCounter++}",
+                            text = text,
+                            contentDescription = contentDescription,
+                            id = id,
+                            className = className,
+                            bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom),
+                            clickable = node.isClickable,
+                            enabled = node.isEnabled,
+                            visibleToUser = node.isVisibleToUser
+                        ))
+                    }
                 }
             }
             for (i in 0 until node.childCount) traverse(node.getChild(i))
         }
-        traverse(rootNode)
+
+        // rootInActiveWindow 대신 모든 윈도우를 순회하여 더 정확한 좌표 정보를 수집합니다.
+        val currentWindows = windows
+        if (currentWindows.isNullOrEmpty()) {
+            traverse(rootInActiveWindow)
+        } else {
+            for (window in currentWindows) {
+                traverse(window.root)
+            }
+        }
+        
         return Json.encodeToString(elements)
     }
 
-    private fun showTargetHighlight(bounds: RectDto, message: String) {
-        removeTargetHighlight()
+    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
+        Log.d(TAG, "showTargetHighlight: bounds=$bounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-
-        // 빨간색 박스(테두리)만 표시하도록 변경
-        val highlight = android.view.View(this).apply {
-            val strokeWidth = (4 * resources.displayMetrics.density).toInt()
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setStroke(strokeWidth, Color.RED)
-                setColor(Color.TRANSPARENT)
-            }
-        }
-
-        val params = WindowManager.LayoutParams(
-            (bounds.right - bounds.left).coerceAtLeast(10),
-            (bounds.bottom - bounds.top).coerceAtLeast(10),
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = bounds.left
-            y = bounds.top
-        }
-        highlightView = highlight
-        windowManager.addView(highlightView, params)
-
-        // 예외 처리 매니저에 하이라이트 좌표 전달 (깜빡임 효과에 재사용)
-        errorHandlingManager.setHighlightBounds(
-            android.graphics.Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
-        )
-        // 하이라이트 표시 = 가이드 안내 완료 → 타이머 시작
-        errorHandlingManager.onUserActionDetected()
-
-        highlightJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(5000)
+        
+        // 메인 스레드에서 UI 작업을 보장
+        CoroutineScope(Dispatchers.Main).launch {
             removeTargetHighlight()
+
+            val highlight = android.view.View(this@TalkTiAccessibilityService).apply {
+                val strokeWidth = (6 * resources.displayMetrics.density).toInt() // 조금 더 두껍게
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setStroke(strokeWidth, color)
+                    setColor(Color.TRANSPARENT)
+                }
+            }
+
+            val params = WindowManager.LayoutParams(
+                (bounds.right - bounds.left).coerceAtLeast(10),
+                (bounds.bottom - bounds.top).coerceAtLeast(10),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = bounds.left
+                y = bounds.top
+                
+                // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            
+            try {
+                highlightView = highlight
+                windowManager.addView(highlightView, params)
+                Log.d(TAG, "Highlight View 추가 성공")
+            } catch (e: Exception) {
+                Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
+            }
+
+            highlightJob = launch {
+                delay(7000) // 좀 더 길게 유지 (7초)
+                removeTargetHighlight()
+            }
         }
     }
 
