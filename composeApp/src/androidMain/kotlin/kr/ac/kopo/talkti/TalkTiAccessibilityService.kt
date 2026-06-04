@@ -89,6 +89,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var highlightView: android.view.View? = null
     private var highlightJob: Job? = null
     private var pendingCommand: String? = null
+    private var llmJob: Job? = null
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -130,12 +131,36 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val intent = packageManager.getLaunchIntentForPackage(packageName)
                 intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
-            }
+            },
+            onLongClick = { showTerminationDialog() }
         )
         floatingMenuManager?.show()
     }
 
+    private fun showTerminationDialog() {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("TalkTi 종료")
+            .setMessage("똑띠 서비스를 종료하시겠습니까?")
+            .setPositiveButton("종료") { _, _ ->
+                disableSelf()
+            }
+            .setNegativeButton("취소", null)
+            .create()
+
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
+    }
+
     private fun startAppGuide() {
+        // [추가] LLM 대기 중 버튼 누르면 취소 처리
+        if (LlmLoadingOverlay.isShowing) {
+            llmJob?.cancel()
+            llmJob = null
+            LlmLoadingOverlay.hide()
+            speakTts("요청을 취소했습니다.")
+            return
+        }
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
@@ -456,7 +481,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
 
-        CoroutineScope(Dispatchers.IO).launch {
+        llmJob = CoroutineScope(Dispatchers.IO).launch {
             withContext(Dispatchers.Main) {
                 LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
                 speakTts("어떻게 도와드릴지 찾고 있어요. 잠시만 기다려주세요.")

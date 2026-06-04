@@ -21,6 +21,8 @@ object LlmLoadingOverlay {
     private var windowManager: WindowManager? = null
     private var animator: ValueAnimator? = null
 
+    val isShowing: Boolean get() = overlayView != null
+
     fun show(context: Context) {
         // 이미 보여지고 있는 경우 중복 생성 방지
         if (overlayView != null) return
