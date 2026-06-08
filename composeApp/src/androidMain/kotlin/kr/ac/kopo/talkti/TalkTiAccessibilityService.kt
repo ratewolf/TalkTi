@@ -53,6 +53,9 @@ import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
 import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
+import kr.ac.kopo.talkti.app.guide.GuideOrchestrator
+import kr.ac.kopo.talkti.app.guide.UiChangeDetector
+import kr.ac.kopo.talkti.models.GuideState
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -86,6 +89,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var actionButtonOverlayManager: ActionButtonOverlayManager? = null
     private var actionTargetFinder : ActionTargetFinder? = null
     private var routeCandidateFinder : RouteCandidateFinder? = null
+
+    // ── UI 변경 감지 기반 가이드 시스템 ──
+    private var guideOrchestrator: GuideOrchestrator? = null
+    private var uiChangeDetector: UiChangeDetector? = null
+    private val guideScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -132,12 +140,49 @@ class TalkTiAccessibilityService : AccessibilityService() {
         actionTargetFinder = ActionTargetFinder()
         routeCandidateFinder = RouteCandidateFinder()
 
+        // ── UI 변경 감지 기반 가이드 시스템 초기화 ──
+        guideOrchestrator = GuideOrchestrator(
+            client = client,
+            candidateOverlayManager = candidateOverlayManager!!,
+            actionButtonOverlayManager = actionButtonOverlayManager!!
+        )
+        guideOrchestrator?.setTts(textToSpeech)
+        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+        val savedUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
+        guideOrchestrator?.setServerUrl(savedUrl)
+
+        uiChangeDetector = UiChangeDetector()
+
+        // ── [신규] GuideOrchestrator 와 UiChangeDetector 의 분석 상태 연동 ──
+        guideOrchestrator?.onAnalyzeStateChanged = { analyzing ->
+            Log.d(TAG, "[디버그] GuideOrchestrator 분석 상태 변경 알림 -> UiChangeDetector.isAnalyzing = $analyzing")
+            uiChangeDetector?.isAnalyzing = analyzing
+        }
+
+        guideOrchestrator?.onStopGuide = {
+            Log.d(TAG, "[디버그] GuideOrchestrator.stopGuide() 감지 → uiChangeDetector.reset() 호출")
+            uiChangeDetector?.reset()
+        }
+
+        uiChangeDetector?.onMeaningfulChange = { uiTreeJson ->
+            val orchestrator = guideOrchestrator
+            if (orchestrator != null && orchestrator.isActive) {
+                // 현재 패키지명 업데이트
+                val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                orchestrator.updatePackageName(currentPkg)
+                Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → GuideOrchestrator.onUiChanged 호출")
+                orchestrator.onUiChanged(uiTreeJson, guideScope)
+            }
+        }
+
         // 예외 처리 매니저 초기화
         errorHandlingManager.initialize(this, textToSpeech)
         errorHandlingManager.onTerminateListener = {
             // 가이드 종료 시 서비스 상태 초기화
             pendingCommand = null
             removeTargetHighlight()
+            guideOrchestrator?.stopGuide()
+            uiChangeDetector?.reset()
         }
     }
 
@@ -265,6 +310,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 textToSpeech?.setLanguage(java.util.Locale.KOREAN)
                 Log.d(TAG, "TTS 초기화 성공")
 
+                // [신규] GuideOrchestrator에도 TTS 전달
+                guideOrchestrator?.setTts(textToSpeech)
+
                 textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         Log.d(TAG, "TTS 시작: $utteranceId")
@@ -279,9 +327,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 startAppGuide()
                             }
                         }
+                        // [신규] 완료 안내 TTS가 끝났을 때 stopGuide() 실제 정리 호출
+                        if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                Log.d(TAG, "[디버그] 완료 안내 TTS 종료 확인 → stopGuide() 호출")
+                                guideOrchestrator?.stopGuide()
+                            }
+                        }
                     }
                     override fun onError(utteranceId: String?) {
                         Log.e(TAG, "TTS 에러: $utteranceId")
+                        // [신규] 완료 안내 TTS 도중 에러가 나도 강제 stopGuide() 처리하여 교착 방지
+                        if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                Log.e(TAG, "[디버그] 완료 안내 TTS 에러 발생 → stopGuide() 강제 호출")
+                                guideOrchestrator?.stopGuide()
+                            }
+                        }
                     }
                 })
             } else {
@@ -334,7 +396,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
+            // ── [신규] UI 변경 감지 기반 가이드 (LLM 우선) ──
+            val orchestrator = guideOrchestrator
+            if (orchestrator != null && orchestrator.isActive) {
+                val uiTreeJsonForGuide = extractScreenTree()
+                Log.d(TAG, "[디버그] 접근성 변경 이벤트 감지 → UiChangeDetector.onNewUiTree 전달")
+                uiChangeDetector?.onNewUiTree(uiTreeJsonForGuide, guideScope)
+            }
 
+            // ── [기존 Fallback] GuideStep 기반 로직 (else if 체인으로 연쇄 전이 방지) ──
             if (currentGuideStep == GuideStep.PLACE_SELECTION) {
 
                 val uiTreeJson = extractScreenTree()
@@ -360,17 +430,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     currentGuideStep =
                         GuideStep.DESTINATION_BUTTON
                 }
-            }
-
-            if (currentGuideStep == GuideStep.DESTINATION_BUTTON) {
+            } else if (currentGuideStep == GuideStep.DESTINATION_BUTTON) {
 
                 showRouteSelectionOverlay()
 
                 currentGuideStep =
                     GuideStep.ROUTE_SELECTION
-            }
-
-            if (currentGuideStep == GuideStep.ROUTE_SELECTION) {
+            } else if (currentGuideStep == GuideStep.ROUTE_SELECTION) {
 
                 val uiTreeJson = extractScreenTree()
 
@@ -559,6 +625,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun startGuideFlow(command: String, packageName: String) {
+        uiChangeDetector?.reset()
+        guideOrchestrator?.startGuide(command, packageName)
+        
+        // 가이드 시작 즉시 첫 화면 강제 분석 보장
+        val initialUiTree = extractScreenTree()
+        Log.d(TAG, "[디버그] 가이드 시작 즉시 첫 화면 강제 분석을 시작합니다.")
+        guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
+    }
+
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
 
@@ -575,6 +651,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 pendingCommand = destination
 
                 speakTts("${destination}을 검색합니다.")
+
+                // [신규] LLM 기반 가이드 시작 — UI 변경 자동 감지 활성화
+                val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                startGuideFlow(command, currentPkg)
 
                 return true
             }
@@ -691,6 +771,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             val launchedPkg = openAppByName(targetId, query)
                             if (launchedPkg != null) {
                                 errorHandlingManager.onGuideStarted(launchedPkg, command)
+                                // [신규] LLM 기반 가이드 시작
+                                startGuideFlow(command, launchedPkg)
                             }
                         }
                     } else {
@@ -698,6 +780,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                         if (currentPkg.isNotBlank()) {
                             errorHandlingManager.onGuideStarted(currentPkg, command)
+                            // [신규] LLM 기반 가이드 시작
+                            startGuideFlow(command, currentPkg)
                         }
                     }
 
@@ -974,6 +1058,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        // [신규] 가이드 시스템 정리
+        guideOrchestrator?.destroy()
+        uiChangeDetector?.destroy()
+        guideScope.cancel()
         errorHandlingManager.destroy() // 예외 처리 매니저 리소스 정리
         speechRecognizer?.destroy()
         textToSpeech?.stop()
