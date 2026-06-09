@@ -160,6 +160,7 @@ class ErrorHandlingManager {
             return true  // 이미 안내함, 기존 로직도 차단
         }
 
+        /*
         // ── Step 2: 팝업/광고 감지 ──
         val svc = service ?: return false
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
@@ -187,6 +188,7 @@ class ErrorHandlingManager {
                 }
             }
         }
+        */
 
         // ── Step 3: 화면 변화 감지 시 타이머 리셋 ──
         // 사용자가 화면에서 무언가 액션을 취했다는 의미이므로 타이머를 리셋합니다.
