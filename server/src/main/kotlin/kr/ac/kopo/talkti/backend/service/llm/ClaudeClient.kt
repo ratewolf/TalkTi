@@ -63,6 +63,7 @@ class ClaudeClient(
         val text: String? = null
     )
 
+
     fun generate(prompt: String, base64Image: String? = null): String? {
         val contents = mutableListOf<ClaudeContent>()
         
