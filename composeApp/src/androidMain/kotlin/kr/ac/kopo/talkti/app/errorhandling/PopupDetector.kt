@@ -82,11 +82,8 @@ class PopupDetector {
                 return PopupResult.RequireManualClose(rect, isExactButton = true)
             }
 
-            // 3순위: 닫기 버튼은 없지만 팝업 창이 확실한 경우
-            Log.d(TAG, "명시적 닫기 버튼이 없는 팝업 감지. 팝업 전체 영역으로 수동 제어 유도")
-            val rect = Rect()
-            popupWindow.getBoundsInScreen(rect)
-            return PopupResult.RequireManualClose(rect, isExactButton = false)
+            // 닫기 버튼이 명확하지 않은 작은 윈도우는 정상적인 UI(예: 플로팅 버튼, 하단 탭)일 확률이 높으므로 
+            // 팝업으로 간주하여 강제로 차단하지 않고 무시합니다.
         }
 
         return PopupResult.NoPopup
