@@ -18,8 +18,7 @@ class PopupDetector {
 
     sealed class PopupResult {
         object NoPopup : PopupResult()
-        object AutoClosed : PopupResult()
-        data class RequireManualClose(val popupRect: Rect) : PopupResult()
+        data class RequireManualClose(val popupRect: Rect, val isExactButton: Boolean) : PopupResult()
     }
 
     companion object {
@@ -68,25 +67,23 @@ class PopupDetector {
             // 1순위: 텍스트 기반 닫기 버튼 탐색
             val textCloseNode = findCloseButtonByText(rootNode)
             if (textCloseNode != null) {
-                val clicked = clickNode(textCloseNode)
-                Log.d(TAG, "텍스트 기반 팝업 닫기 시도: ${textCloseNode.text ?: textCloseNode.contentDescription} → 결과=$clicked")
-                if (clicked) return PopupResult.AutoClosed
+                val rect = Rect()
+                textCloseNode.getBoundsInScreen(rect)
+                Log.d(TAG, "텍스트 기반 닫기 버튼 감지됨 -> 수동 제어 유도: ${textCloseNode.text ?: textCloseNode.contentDescription}")
+                return PopupResult.RequireManualClose(rect, isExactButton = true)
             }
 
             // 2순위: 이미지(X 아이콘) 기반 닫기 버튼 탐색
             val imageCloseNode = findCloseButtonByImage(rootNode, popupWindow)
             if (imageCloseNode != null) {
-                val clicked = clickNode(imageCloseNode)
-                Log.d(TAG, "이미지 기반 팝업 닫기 시도 → 결과=$clicked")
-                if (clicked) return PopupResult.AutoClosed
+                val rect = Rect()
+                imageCloseNode.getBoundsInScreen(rect)
+                Log.d(TAG, "이미지 기반 닫기 버튼 감지됨 -> 수동 제어 유도")
+                return PopupResult.RequireManualClose(rect, isExactButton = true)
             }
 
-            // 3순위: 닫기 버튼은 없지만 팝업 창이 확실한 경우
-            // 강제 뒤로가기는 앱이 종료될 위험이 있으므로 수동 제어를 유도합니다.
-            Log.d(TAG, "명시적 닫기 버튼이 없는 팝업 감지. 사용자 직접 제어 유도")
-            val rect = Rect()
-            popupWindow.getBoundsInScreen(rect)
-            return PopupResult.RequireManualClose(rect)
+            // 닫기 버튼이 명확하지 않은 작은 윈도우는 정상적인 UI(예: 플로팅 버튼, 하단 탭)일 확률이 높으므로 
+            // 팝업으로 간주하여 강제로 차단하지 않고 무시합니다.
         }
 
         return PopupResult.NoPopup
@@ -269,12 +266,5 @@ class PopupDetector {
             current = current.parent
         }
         return null
-    }
-
-    /**
-     * 노드에 ACTION_CLICK을 수행합니다.
-     */
-    private fun clickNode(node: AccessibilityNodeInfo): Boolean {
-        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 }

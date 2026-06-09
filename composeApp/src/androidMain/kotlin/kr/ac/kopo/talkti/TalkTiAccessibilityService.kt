@@ -53,6 +53,7 @@ import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
 import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
+import kr.ac.kopo.talkti.app.guide.AgentSessionManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -89,6 +90,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
+
+    // ── 연속 가이드 세션 매니저 ──
+    private val agentSessionManager = AgentSessionManager()
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
@@ -164,6 +168,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .setTitle("TalkTi 종료")
             .setMessage("똑띠 서비스를 종료하시겠습니까?")
             .setPositiveButton("종료") { _, _ ->
+                agentSessionManager.endSession()
                 disableSelf()
             }
             .setNegativeButton("취소", null)
@@ -180,6 +185,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             llmJob = null
             LlmLoadingOverlay.hide()
             floatingMenuManager?.updateLoadingStatus(false)
+            agentSessionManager.endSession()
             speakTts("요청을 취소했습니다.")
             return
         }
@@ -205,6 +211,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
                     if (!processLocalCommand(command)) {
+                        agentSessionManager.startSession(command)
                         captureScreenForLLM(command)
                     }
                 }
@@ -238,6 +245,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             handleSelectionResponse(userCommand)
                         } else {
                             if (!processLocalCommand(userCommand)) {
+                                agentSessionManager.startSession(userCommand)
                                 captureScreenForLLM(userCommand)
                             }
                         }
@@ -294,6 +302,27 @@ class TalkTiAccessibilityService : AccessibilityService() {
         // ── 예외 처리 인터셉터: 팝업/이탈/타이머 검사를 기존 로직보다 먼저 수행 ──
         if (errorHandlingManager.interceptEvent(event)) return
 
+        // ── 연속 가이드 티키타카 로직 ──
+        // 화면에 변화가 생기거나 클릭이 일어났을 때, 세션이 진행 중이면 자동 캡처 후 서버 전송
+        if (agentSessionManager.isActive) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || 
+                event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+                
+                if (agentSessionManager.canCapture(3000)) {
+                    val currentGoal = agentSessionManager.currentGoal
+                    if (currentGoal != null) {
+                        Log.d(TAG, "티키타카 루프 동작: 화면 전환/클릭 감지 -> 캡처 전송 (목표: \$currentGoal)")
+                        CoroutineScope(Dispatchers.Main).launch {
+                            delay(1000)
+                            if (!LlmLoadingOverlay.isShowing) {
+                                captureScreenForLLM(currentGoal)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         val command = pendingCommand
         if (command != null && (
                     event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
@@ -327,73 +356,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                         println("❌ [매크로 대기] 입력창 검색 실패. 다음 변경 이벤트를 기다립니다.")
                     }
-                }
-            }
-        }
-        if (
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) {
-
-            if (currentGuideStep == GuideStep.PLACE_SELECTION) {
-
-                val uiTreeJson = extractScreenTree()
-
-                val elements = try {
-                    Json.decodeFromString<List<UiElement>>(uiTreeJson)
-                } catch (e: Exception) {
-                    emptyList()
-                }
-
-                val actionTarget =
-                    actionTargetFinder?.findPrimaryAction(elements)
-
-                if (actionTarget != null) {
-
-                    actionButtonOverlayManager?.showActionButtonHighlight(
-                        actionTarget.bounds,
-                        actionTarget.text
-                    )
-
-                    speakTts("${actionTarget.text} 버튼을 눌러주세요.")
-
-                    currentGuideStep =
-                        GuideStep.DESTINATION_BUTTON
-                }
-            }
-
-            if (currentGuideStep == GuideStep.DESTINATION_BUTTON) {
-
-                showRouteSelectionOverlay()
-
-                currentGuideStep =
-                    GuideStep.ROUTE_SELECTION
-            }
-
-            if (currentGuideStep == GuideStep.ROUTE_SELECTION) {
-
-                val uiTreeJson = extractScreenTree()
-
-                val elements = try {
-                    Json.decodeFromString<List<UiElement>>(uiTreeJson)
-                } catch (e: Exception) {
-                    emptyList()
-                }
-
-                val actionTarget =
-                    actionTargetFinder?.findPrimaryAction(elements)
-
-                if (actionTarget != null) {
-
-                    actionButtonOverlayManager?.showActionButtonHighlight(
-                        actionTarget.bounds,
-                        actionTarget.text
-                    )
-
-                    speakTts("${actionTarget.text} 버튼을 눌러주세요.")
-
-                    currentGuideStep =
-                        GuideStep.START_GUIDANCE
                 }
             }
         }
@@ -562,38 +524,44 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun processLocalCommand(command: String): Boolean {
         val cleanCmd = command.replace(" ", "").lowercase()
 
-        if (cleanCmd.endsWith("가자")) {
+        val routeKeywords = listOf("가자", "가는길찾아줘", "길찾아줘", "찾아달라니까", "찾아줘", "어떻게가", "가고싶어", "알려줘", "길찾기")
+        val isRouteCommand = routeKeywords.any { cleanCmd.endsWith(it) || cleanCmd.contains(it) }
 
-            val destination =
-                cleanCmd.removeSuffix("가자").trim()
+        val isAppOpenCmd = cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || cleanCmd.contains("보여줘")
 
+        // 1. 하이브리드 모드: 정확한 NLP 파싱 및 딥링크 앱 실행 후 LLM 연속 루프에 제어권 이양
+        if (isRouteCommand && !isAppOpenCmd) {
+            val destination = cleanSearchQuery(command)
             if (destination.isNotBlank()) {
-
-                autoDestinationQuery = destination
-                isAutoDestinationFlowActive = true
-
-                pendingCommand = destination
-
-                speakTts("${destination}을 검색합니다.")
-
+                val launchedPkg = openAppByName("지도", destination)
+                if (launchedPkg != null) {
+                    errorHandlingManager.onGuideStarted(launchedPkg, command)
+                    // 노란색 오버레이 하드코딩 매크로 대신, 깨끗한 LLM 연속 루프로 전환
+                    agentSessionManager.startSession(command)
+                } else {
+                    speakTts("${destination}을 검색할 수 있는 지도 앱이 없습니다.")
+                }
                 return true
             }
         }
-        // [추가] Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
+
+        // 2. Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
             startSelectionFlow(isContinuation = false)
             return true
         }
-        val isAppOpenCmd =
-            cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") ||
-                    cleanCmd.contains("보여줘")
 
-        if (!isAppOpenCmd) return false
-        val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
-        if (launchedPkg != null) {
-            errorHandlingManager.onGuideStarted(launchedPkg, command)
-            return true
+        // 3. 단순 앱 실행 명령
+        if (isAppOpenCmd) {
+            val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
+            if (launchedPkg != null) {
+                errorHandlingManager.onGuideStarted(launchedPkg, command)
+                // 길찾기뿐만 아니라, 일반 앱(유튜브, 카톡, 갤러리 등)을 실행한 후에도 무조건 LLM 연속 루프로 전환
+                agentSessionManager.startSession(command)
+                return true
+            }
         }
+        
         return false
     }
 
@@ -651,7 +619,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
                 floatingMenuManager?.bringToFront()
                 floatingMenuManager?.updateLoadingStatus(true)
-                speakTts("어떻게 도와드릴지 찾고 있어요. 잠시만 기다려주세요.")
+                speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
             }
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
@@ -668,6 +636,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
                     floatingMenuManager?.updateLoadingStatus(false)
+                    
+                    if (response.actionType == "FINISH") {
+                        Log.d(TAG, "가이드 완전 종료 신호 (FINISH) 수신 -> 세션 종료")
+                        agentSessionManager.endSession()
+                    }
+                    
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
                     speakTts(response.ttsMessage, utteranceId)
@@ -700,7 +674,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             errorHandlingManager.onGuideStarted(currentPkg, command)
                         }
                     }
-
                     if (response.actionType == "OPEN_APP") {
                         // OPEN_APP 처리는 이미 위에서 완료
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
@@ -710,26 +683,18 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 delay(1000)
                                 val success = performImmediateActionSetText(bounds, response.actionArguments!!)
                                 if (!success) {
-                                    pendingCommand = response.actionArguments!!
+                                    // 텍스트 입력에 실패하면 클릭만 수행하고, 다음 화면에서 LLM이 다시 판단하도록 맡김
                                     performImmediateActionClick(bounds)
                                 }
                             }
                         }
                     } else if (response.actionType == "CLICK") {
                         println("자동 클릭 예약 실행")
-                        val targetText = if (!response.actionArguments.isNullOrBlank()) {
-                            response.actionArguments!!
-                        } else {
-                            cleanSearchQuery(command)
-                        }
-
                         response.targetBounds?.let { bounds ->
                             CoroutineScope(Dispatchers.Main).launch {
                                 delay(1000)
-                                val success = performImmediateActionClick(bounds)
-                                if (success) {
-                                    pendingCommand = targetText
-                                }
+                                performImmediateActionClick(bounds)
+                                // LLM 모드에서는 pendingCommand를 사용한 강제 주입을 하지 않고 LLM 루프에 맡김
                             }
                         }
                     }
@@ -1201,20 +1166,42 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun cleanSearchQuery(command: String): String {
-        return command
-            .replace(".", "")
-            .replace(",", "")
-            .replace("으로 가줘", "")
-            .replace("으로가줘", "")
-            .replace("택시 타고", "")
-            .replace("택시 불러줘", "")
-            .replace("길찾기", "")
-            .replace("검색해줘", "")
-            .replace("가줘", "")
-            .replace("갈래", "")
-            .replace("가자", "")
-            .replace("으로", "")
-            .trim()
+        var clean = command.replace(".", "").replace(",", "")
+        val patterns = listOf(
+            "지금\\s*내\\s*위치에서",
+            "내\\s*위치에서",
+            "현재\\s*위치에서",
+            "으로\\s*가\\s*줘",
+            "가는\\s*길\\s*찾아\\s*달라니까",
+            "가는\\s*길\\s*찾아\\s*줘",
+            "가는\\s*길\\s*알려\\s*줘",
+            "가는\\s*경로\\s*알려\\s*줘",
+            "가는\\s*경로",
+            "어떻게\\s*가",
+            "가고\\s*싶어",
+            "찾아\\s*달라니까",
+            "찾아\\s*줘",
+            "알려\\s*줘",
+            "버스\\s*타고",
+            "지하철\\s*타고",
+            "대중교통\\s*타고",
+            "택시\\s*타고",
+            "버스로",
+            "지하철로",
+            "도보로",
+            "자전거로",
+            "택시\\s*불러\\s*줘",
+            "길찾기",
+            "검색해\\s*줘",
+            "가\\s*줘",
+            "갈래",
+            "가자",
+            "으로"
+        )
+        for (pattern in patterns) {
+            clean = clean.replace(Regex(pattern), "")
+        }
+        return clean.trim()
     }
 
 }
