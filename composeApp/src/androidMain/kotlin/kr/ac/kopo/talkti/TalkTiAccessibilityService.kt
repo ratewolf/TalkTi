@@ -169,6 +169,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .setMessage("똑띠 서비스를 종료하시겠습니까?")
             .setPositiveButton("종료") { _, _ ->
                 agentSessionManager.endSession()
+                removeTargetHighlight()
                 disableSelf()
             }
             .setNegativeButton("취소", null)
@@ -186,6 +187,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             LlmLoadingOverlay.hide()
             floatingMenuManager?.updateLoadingStatus(false)
             agentSessionManager.endSession()
+            removeTargetHighlight()
             speakTts("요청을 취소했습니다.")
             return
         }
@@ -302,6 +304,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
         // ── 예외 처리 인터셉터: 팝업/이탈/타이머 검사를 기존 로직보다 먼저 수행 ──
         if (errorHandlingManager.interceptEvent(event)) return
 
+        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 활성화된 가이드 하이라이트 오버레이 제거
+        // (단, 우리 앱 자체의 오버레이 창이 추가되면서 생기는 WINDOW_STATE_CHANGED 이벤트는 무시)
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName)) {
+            removeTargetHighlight()
+        }
+
         // ── 연속 가이드 티키타카 로직 ──
         // 화면에 변화가 생기거나 클릭이 일어났을 때, 세션이 진행 중이면 자동 캡처 후 서버 전송
         if (agentSessionManager.isActive) {
@@ -313,7 +322,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     if (currentGoal != null) {
                         Log.d(TAG, "티키타카 루프 동작: 화면 전환/클릭 감지 -> 캡처 전송 (목표: \$currentGoal)")
                         CoroutineScope(Dispatchers.Main).launch {
-                            delay(1000)
+                            delay(800) // [수정] 반응 속도를 올리기 위해 대기 시간 단축 (1000ms -> 800ms)
                             if (!LlmLoadingOverlay.isShowing) {
                                 captureScreenForLLM(currentGoal)
                             }
@@ -566,6 +575,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     fun captureScreenForLLM(userCommand: String) {
+        removeTargetHighlight()
         val screenSessionId = "screen_${System.currentTimeMillis()}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
@@ -640,6 +650,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     if (response.actionType == "FINISH") {
                         Log.d(TAG, "가이드 완전 종료 신호 (FINISH) 수신 -> 세션 종료")
                         agentSessionManager.endSession()
+                        removeTargetHighlight()
                     }
                     
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
@@ -649,8 +660,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
                     val highlightColor = if (response.actionType == "ASK_USER") Color.YELLOW else Color.RED
 
-                    response.targetBounds?.let { bounds ->
-                        showTargetHighlight(bounds, response.ttsMessage, highlightColor)
+                    val targetBounds = response.targetBounds
+                    if (targetBounds != null) {
+                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor)
+                    } else {
+                        removeTargetHighlight()
                     }
 
                     if (response.actionType == "OPEN_APP") {
@@ -683,17 +697,18 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 delay(1000)
                                 val success = performImmediateActionSetText(bounds, response.actionArguments!!)
                                 if (!success) {
-                                    // 텍스트 입력에 실패하면 클릭만 수행하고, 다음 화면에서 LLM이 다시 판단하도록 맡김
-                                    performImmediateActionClick(bounds)
+                                    // [수정] 자동 클릭 기능을 전면 제거하여 사용자 직접 클릭 유도
+                                    // performImmediateActionClick(bounds)
                                 }
                             }
                         }
                     } else if (response.actionType == "CLICK") {
-                        println("자동 클릭 예약 실행")
+                        println("자동 클릭 예약 실행 (사용자 클릭 유도로 변경하여 자동 클릭 비활성화)")
                         response.targetBounds?.let { bounds ->
                             CoroutineScope(Dispatchers.Main).launch {
                                 delay(1000)
-                                performImmediateActionClick(bounds)
+                                // [수정] 자동 클릭 기능을 제거하여 사용자가 하이라이트를 보고 직접 클릭하도록 함
+                                // performImmediateActionClick(bounds)
                                 // LLM 모드에서는 pendingCommand를 사용한 강제 주입을 하지 않고 LLM 루프에 맡김
                             }
                         }
@@ -998,53 +1013,46 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
-        Log.d(TAG, "showTargetHighlight: bounds=$bounds, color=$color")
+        val optimizedBounds = findOptimizedBounds(bounds)
+        Log.d(TAG, "showTargetHighlight: original=$bounds, optimized=$optimizedBounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // 메인 스레드에서 UI 작업을 보장
-        CoroutineScope(Dispatchers.Main).launch {
-            removeTargetHighlight()
+        removeTargetHighlight()
 
-            val highlight = android.view.View(this@TalkTiAccessibilityService).apply {
-                val strokeWidth = (6 * resources.displayMetrics.density).toInt() // 조금 더 두껍게
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setStroke(strokeWidth, color)
-                    setColor(Color.TRANSPARENT)
-                }
+        val highlight = android.view.View(this@TalkTiAccessibilityService).apply {
+            val strokeWidth = (6 * resources.displayMetrics.density).toInt() // 조금 더 두껍게
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setStroke(strokeWidth, color)
+                setColor(Color.TRANSPARENT)
             }
+        }
 
-            val params = WindowManager.LayoutParams(
-                (bounds.right - bounds.left).coerceAtLeast(10),
-                (bounds.bottom - bounds.top).coerceAtLeast(10),
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
-                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = bounds.left
-                y = bounds.top
+        val params = WindowManager.LayoutParams(
+            (optimizedBounds.right - optimizedBounds.left).coerceAtLeast(10),
+            (optimizedBounds.bottom - optimizedBounds.top).coerceAtLeast(10),
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = optimizedBounds.left
+            y = optimizedBounds.top
 
-                // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
+            // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
+        }
 
-            try {
-                highlightView = highlight
-                windowManager.addView(highlightView, params)
-                Log.d(TAG, "Highlight View 추가 성공")
-            } catch (e: Exception) {
-                Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
-            }
-
-            highlightJob = launch {
-                delay(3000) // 3초간 유지 후 제거
-                removeTargetHighlight()
-            }
+        try {
+            highlightView = highlight
+            windowManager.addView(highlightView, params)
+            Log.d(TAG, "Highlight View 추가 성공")
+        } catch (e: Exception) {
+            Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
         }
     }
 
@@ -1055,6 +1063,66 @@ class TalkTiAccessibilityService : AccessibilityService() {
             windowManager.removeView(it)
             highlightView = null
         }
+    }
+
+    private fun findOptimizedBounds(bounds: RectDto): RectDto {
+        val activeWindows = windows ?: emptyList()
+        var foundNode: AccessibilityNodeInfo? = null
+        
+        fun traverse(node: AccessibilityNodeInfo?) {
+            if (node == null || foundNode != null) return
+            if (node.isVisibleToUser) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                    foundNode = node
+                    return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                traverse(node.getChild(i))
+            }
+        }
+        
+        if (activeWindows.isNotEmpty()) {
+            for (window in activeWindows) {
+                if (foundNode != null) break
+                traverse(window.root)
+            }
+        }
+        if (foundNode == null) {
+            traverse(rootInActiveWindow)
+        }
+        
+        val node = foundNode ?: return bounds
+        var bestNode: AccessibilityNodeInfo = node
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        
+        var temp: AccessibilityNodeInfo? = node
+        var count = 0
+        while (temp != null && count < 3) {
+            if (temp.isClickable) {
+                val tempRect = Rect()
+                temp.getBoundsInScreen(tempRect)
+                
+                val bestRect = Rect()
+                bestNode.getBoundsInScreen(bestRect)
+                
+                // 화면의 가로 폭 전체를 거의 다 덮거나 세로로 너무 거대하지 않은 적절한 크기의 클릭 가능한 컨테이너만 선택
+                if (tempRect.width() > bestRect.width() || tempRect.height() > bestRect.height()) {
+                    if (tempRect.width() < screenWidth * 0.95 && tempRect.height() < screenHeight * 0.4) {
+                        bestNode = temp
+                    }
+                }
+            }
+            temp = temp.parent
+            count++
+        }
+        
+        val finalRect = Rect()
+        bestNode.getBoundsInScreen(finalRect)
+        return RectDto(finalRect.left, finalRect.top, finalRect.right, finalRect.bottom)
     }
 
     private fun performImmediateActionSetText(bounds: RectDto, text: String): Boolean {
