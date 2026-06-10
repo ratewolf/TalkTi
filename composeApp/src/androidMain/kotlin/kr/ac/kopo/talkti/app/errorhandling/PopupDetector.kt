@@ -100,14 +100,16 @@ class PopupDetector {
     private fun findPopupWindows(allWindows: List<AccessibilityWindowInfo>): List<AccessibilityWindowInfo> {
         val result = mutableListOf<AccessibilityWindowInfo>()
 
-        // 가장 큰 윈도우(메인 앱)의 크기를 기준으로 삼음
+        // 가장 큰 윈도우(메인 앱)의 크기 및 Rect 기준 설정
         var mainWindowArea = 0L
+        var mainRect = Rect()
         for (w in allWindows) {
             val rect = Rect()
             w.getBoundsInScreen(rect)
             val area = (rect.width().toLong()) * rect.height().toLong()
             if (area > mainWindowArea) {
                 mainWindowArea = area
+                mainRect = rect
             }
         }
 
@@ -129,12 +131,18 @@ class PopupDetector {
             // 메인 윈도우보다 작은 윈도우 = 팝업/다이얼로그일 가능성 높음
             val isSmaller = mainWindowArea > 0 && windowArea < mainWindowArea * 0.95
 
+            // 가로 또는 세로 방향으로 메인 화면을 거의 채우는 레이아웃 패널인지 확인 (사이드바, 상하단 바 등 오인식 방지)
+            val isFullWidth = mainWindowArea > 0 && windowRect.width() * 10 >= mainRect.width() * 9
+            val isFullHeight = mainWindowArea > 0 && windowRect.height() * 10 >= mainRect.height() * 9
+            val isLayoutPanel = isFullWidth || isFullHeight
+
             // 다이얼로그 내부에 닫기 관련 텍스트가 있으면 팝업으로 확정
             val hasCloseHint = hasAnyCloseKeyword(root)
 
-            if (isSmaller || hasCloseHint) {
+            // 크기가 작으면서 동시에 "닫기" 힌트가 있고, 레이아웃 패널이 아니어야 팝업으로 간주
+            if (isSmaller && !isLayoutPanel && hasCloseHint) {
                 result.add(window)
-                Log.d(TAG, "팝업 후보: pkg=$pkgName, area=$windowArea (메인=$mainWindowArea), hasCloseHint=$hasCloseHint")
+                Log.d(TAG, "팝업 후보 발견: pkg=$pkgName, bounds=$windowRect, isLayoutPanel=$isLayoutPanel, hasCloseHint=$hasCloseHint")
             }
         }
 
