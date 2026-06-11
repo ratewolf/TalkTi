@@ -25,6 +25,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.widget.EditText
 import android.app.AlertDialog
+import android.annotation.SuppressLint
 import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.http.*
@@ -135,6 +136,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -458,7 +460,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 if (agentSessionManager.canCapture(3000)) {
                     val currentGoal = agentSessionManager.currentGoal
                     if (currentGoal != null) {
-                        Log.d(TAG, "티키타카 루프 동작: 화면 전환/클릭 감지 -> 캡처 전송 (목표: \$currentGoal)")
+                        Log.d(TAG, "티키타카 루프 동작: 화면 전환/클릭 감지 -> 캡처 전송 (목표: $currentGoal)")
                         CoroutineScope(Dispatchers.Main).launch {
                             delay(800) // [수정] 반응 속도를 올리기 위해 대기 시간 단축 (1000ms -> 800ms)
                             if (!LlmLoadingOverlay.isShowing) {
@@ -551,8 +553,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             resultNode.getBoundsInScreen(rect)
                             val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
 
-                            showTargetHighlight(bounds, "검색된 ${targetFriend} 채팅방을 눌러주세요.", Color.RED)
-                            speakTts("검색된 ${targetFriend} 채팅방을 눌러주세요.")
+                            showTargetHighlight(bounds, "검색된 $targetFriend 채팅방을 눌러주세요.", Color.RED)
+                            speakTts("검색된 $targetFriend 채팅방을 눌러주세요.")
                         }
                     }
                 } else {
@@ -1653,7 +1655,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
         var result = command
 
         // 정규표현식 패턴 목록 정의
-        var clean = command.replace(".", "").replace(",", "")
         val patterns = listOf(
             "지금\\s*내\\s*위치에서",
             "내\\s*위치에서",
