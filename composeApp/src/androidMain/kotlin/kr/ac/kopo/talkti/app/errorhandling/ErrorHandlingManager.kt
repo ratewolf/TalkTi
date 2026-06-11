@@ -49,6 +49,9 @@ class ErrorHandlingManager {
     private var lastHighlightBounds: Rect? = null
     private var lastPopupPromptTime: Long = 0L
 
+    // ─── 복귀 오버레이 상태 ───
+    private var returnOverlayView: View? = null
+
     /** 가이드가 현재 진행 중인지 여부 */
     var isGuideActive: Boolean = false
         private set
@@ -113,6 +116,7 @@ class ErrorHandlingManager {
         boundaryChecker.clearTarget()
         timeoutManager.cancelTimer()
         removeBlinkOverlay()
+        removeReturnOverlay()
         Log.d(TAG, "가이드 종료 - 예외 처리 상태 초기화")
     }
 
@@ -152,6 +156,12 @@ class ErrorHandlingManager {
 
         // ── Step 1: 외부 앱 이탈 검사 ──
         val boundaryResult = boundaryChecker.checkBoundary(event)
+        
+        // 사용자가 자발적으로 원래 앱으로 돌아온 경우 오버레이 제거
+        if (boundaryResult == BoundaryChecker.CheckResult.ON_TRACK) {
+            removeReturnOverlay()
+        }
+
         if (boundaryResult is BoundaryChecker.CheckResult.EXTERNAL_APP_DEVIATION) {
             handleExternalDeviation(boundaryResult)
             return true
@@ -166,16 +176,15 @@ class ErrorHandlingManager {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
             when (val popupResult = popupDetector.detectAndClosePopup(svc)) {
-                is PopupDetector.PopupResult.AutoClosed -> {
-                    Log.d(TAG, "팝업 자동 닫기 완료 → 기존 로직 일시 중단")
-                    speakTts("방해되는 창을 닫았습니다.")
-                    return true
-                }
                 is PopupDetector.PopupResult.RequireManualClose -> {
-                    Log.d(TAG, "수동 닫기 필요 → TTS 안내 및 오버레이 표시")
+                    Log.d(TAG, "팝업 수동 닫기 유도 → TTS 안내 및 오버레이 표시 (isExactButton=${popupResult.isExactButton})")
                     val now = System.currentTimeMillis()
                     if (now - lastPopupPromptTime > 5000) { // 5초 쿨타임
-                        speakTts("화면에 뜬 창을 직접 닫아주세요.")
+                        if (popupResult.isExactButton) {
+                            speakTts("방해되는 창이 떴습니다. 화면에 깜빡이는 닫기 버튼을 찾아 직접 눌러주세요.")
+                        } else {
+                            speakTts("화면에 방해되는 창이 떴습니다. 닫기 표시를 찾아 직접 눌러주세요.")
+                        }
                         lastPopupPromptTime = now
                     }
                     setHighlightBounds(popupResult.popupRect)
@@ -206,21 +215,15 @@ class ErrorHandlingManager {
     // ════════════════════════════════════════════════════════════════
 
     /**
-     * 외부 앱 이탈 시 처리: TTS 안내 → 자동 뒤로가기
+     * 외부 앱 이탈 시 처리: TTS 안내 → 원래 앱으로 돌아가기 오버레이 표시
      */
     private fun handleExternalDeviation(result: BoundaryChecker.CheckResult.EXTERNAL_APP_DEVIATION) {
         Log.d(TAG, "외부 앱 이탈 처리: ${result.targetPackage} → ${result.currentPackage}")
 
-        speakTts("앗, 화면을 잘못 누르신 것 같아요. 다시 원래 화면으로 돌아갈게요.")
+        speakTts("앗, 다른 화면으로 이동하셨어요. 원래 화면으로 돌아가시려면 화면 아래의 돌아가기 버튼을 눌러주세요.")
 
-        // TTS 출력 후 약간의 대기 후 뒤로가기 실행
         CoroutineScope(Dispatchers.Main).launch {
-            delay(2000) // 2초 후 자동 복귀 (음성 안내 들을 시간)
-            service?.let { svc ->
-                boundaryChecker.navigateBack(svc)
-                Log.d(TAG, "뒤로가기 실행 완료")
-                boundaryChecker.resetNotification()
-            }
+            showReturnOverlay()
         }
     }
 
@@ -248,6 +251,68 @@ class ErrorHandlingManager {
             service?.let { svc ->
                 boundaryChecker.navigateBack(svc)
             }
+        }
+    }
+
+    /**
+     * 외부 앱 이탈 시 복귀를 돕는 버튼 오버레이 표시
+     */
+    private fun showReturnOverlay() {
+        val svc = service ?: return
+        if (returnOverlayView != null) return
+
+        val windowManager = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        
+        val button = android.widget.Button(svc).apply {
+            text = "원래 화면으로 돌아가기"
+            setBackgroundColor(Color.parseColor("#FF5252"))
+            setTextColor(Color.WHITE)
+            textSize = 20f
+            setPadding(50, 30, 50, 30)
+            elevation = 10f
+            
+            val drawable = GradientDrawable()
+            drawable.setColor(Color.parseColor("#FF5252"))
+            drawable.cornerRadius = 24f
+            background = drawable
+
+            setOnClickListener {
+                Log.d(TAG, "돌아가기 오버레이 클릭됨 -> 뒤로가기 실행")
+                boundaryChecker.navigateBack(svc)
+                removeReturnOverlay()
+                boundaryChecker.resetNotification()
+            }
+        }
+        
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = 150 // Bottom margin
+        }
+
+        try {
+            windowManager.addView(button, params)
+            returnOverlayView = button
+            Log.d(TAG, "돌아가기 오버레이 표시 성공")
+        } catch (e: Exception) {
+            Log.e(TAG, "돌아가기 오버레이 표시 실패: ${e.message}")
+        }
+    }
+
+    private fun removeReturnOverlay() {
+        returnOverlayView?.let { view ->
+            try {
+                val windowManager = service?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                windowManager?.removeView(view)
+            } catch (e: Exception) {
+                Log.e(TAG, "돌아가기 오버레이 제거 실패: ${e.message}")
+            }
+            returnOverlayView = null
         }
     }
 
@@ -386,6 +451,7 @@ class ErrorHandlingManager {
      */
     fun destroy() {
         removeBlinkOverlay()
+        removeReturnOverlay()
         timeoutManager.destroy()
         boundaryChecker.clearTarget()
         onTerminateListener = null
