@@ -71,13 +71,13 @@ object PromptTemplates {
         {
           "candidateId": "UI 요소의 candidateId 또는 실행할 앱의 packageName (해당 없을 경우 null)",
           "actionType": "행동 유형 (CLICK, ASK_USER, ACTION_SET_TEXT, OPEN_APP)",
-          "arguments": "입력할 텍스트 (텍스트 입력 시 사용, 그 외 생략. 주의: 사용자 발화에서 '가줘', '검색해줘', '으로', '가고 싶어' 등 불필요한 조사와 어미, 동사를 완벽히 제거하고 '삼성병원', '강남역' 같이 실제 입력창에 검색할 정제된 키워드/명칭만 추출해서 넣으세요.)",
+          "arguments": "실행할 앱에서 검색할 목적지 키워드 또는 입력창에 입력할 정제된 텍스트. (OPEN_APP 또는 ACTION_SET_TEXT 시 사용, 해당 없을 경우 null. 주의: 사용자 발화에서 '가줘', '어떻게 가', '검색해줘', '으로', '가고 싶어' 등 불필요한 조사, 어미, 질문형 표현, 동사를 완전히 제거하고 '삼성병원', '강남역' 같이 실제 입력창에 검색할 정제된 키워드/명칭만 추출해서 넣으세요.)",
           "ttsMessage": "어르신께 읽어드릴 음성 안내",
           "confidence": 확신도 (0.0 ~ 1.0)
         }
         
         [핵심 규칙 - 반드시 순차적으로 1단계씩 소통하세요!]
-        1. [앱 실행] 만약 사용자의 명령이 특정 앱을 실행해 달라는 의미라면, [스마트폰에 설치된 앱 리스트]에서 가장 적합한 packageName을 찾아 candidateId에 넣고 actionType을 OPEN_APP으로 설정하세요.
+        1. [앱 실행] 만약 사용자의 명령이 특정 앱을 실행해 달라는 의미라면, [스마트폰에 설치된 앱 리스트]에서 가장 적합한 packageName을 찾아 candidateId에 넣고 actionType을 OPEN_APP으로 설정하세요. 이때, 사용자가 가고자 하는 목적지 키워드(예: "삼성병원")를 정제하여 arguments에 포함하세요.
         2. [목적지 확인 소거법 질문] 앱에서 텍스트 입력(ACTION_SET_TEXT)으로 목적지를 검색한 직후라면, 화면에 '현 위치를 기준으로 한 목적지 검색 결과 리스트'가 나타납니다. 화면에 보이는 장소 목록 중 가장 맨 위에 있는 항목(또는 가장 정확도 높은 1개)만 먼저 어르신께 물어보세요. (actionType: ASK_USER)
         2. 만약 어르신이 "아니"라고 대답했다면, 방금 물어본 항목은 제외하고 그 다음 항목을 물어보세요 (소거법 방식).
         3. [오버레이 안내] 사용자가 특정 장소를 선택하거나 확정했다면, 반드시 지금 당장 눌러야 할 단 1개의 버튼에만 액션을 지시하세요 (actionType: CLICK).
@@ -109,6 +109,15 @@ object PromptTemplates {
             "actionType": "CLICK",
             "candidateId": "node_12",
             "ttsMessage": "화면에 빨간색 네모 박스가 쳐진 '도착지 설정' 버튼을 손가락으로 꾹 눌러주세요.",
+            "confidence": 1.0
+        }
+
+        [상황 D: 스마트폰 메인 화면에서 특정 장소로 이동하기 위해 지도 앱을 열 때]
+        {
+            "actionType": "OPEN_APP",
+            "candidateId": "net.daum.android.map",
+            "arguments": "삼성병원",
+            "ttsMessage": "카카오맵 앱을 열어 삼성병원을 검색해 드릴게요.",
             "confidence": 1.0
         }
     """

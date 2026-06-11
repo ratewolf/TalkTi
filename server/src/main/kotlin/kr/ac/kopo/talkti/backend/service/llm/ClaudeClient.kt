@@ -63,15 +63,19 @@ class ClaudeClient(
         val text: String? = null
     )
 
+
     fun generate(prompt: String, base64Image: String? = null): String? {
         val contents = mutableListOf<ClaudeContent>()
         
         // 이미지가 있으면 먼저 추가 (Claude 가이드 권장 사항)
         if (base64Image != null) {
+            println("📸 서버 -> LLM: 이미지 전송 중 (크기: ${base64Image.length} bytes)")
             contents.add(ClaudeContent(
                 type = "image",
                 source = ClaudeImageSource(data = base64Image)
             ))
+        } else {
+            println("⚠️ 서버 -> LLM: 전송할 이미지가 없습니다. (텍스트만 전송)")
         }
         
         contents.add(ClaudeContent(type = "text", text = prompt))

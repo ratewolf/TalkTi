@@ -48,10 +48,17 @@ class BoundaryChecker {
      * 가이드를 시작할 때 대상 앱 패키지명과 목표를 등록합니다.
      */
     fun setTarget(packageName: String, goal: String) {
-        targetPackageName = packageName
+        // 초기에 전달된 패키지가 런처나 똑띠 등 시스템/자기자신인 경우,
+        // 실제 실행될 목표 앱의 패키지명을 아직 모르는 상태이므로 대기 상태로 설정합니다.
+        if (SYSTEM_PACKAGES.any { packageName.contains(it) }) {
+            targetPackageName = "WAITING_FOR_REAL_APP"
+            Log.d(TAG, "가이드 대상 등록 대기 (런처/시스템 뷰에서 시작됨): init_pkg=$packageName, goal=$goal")
+        } else {
+            targetPackageName = packageName
+            Log.d(TAG, "가이드 대상 등록: pkg=$packageName, goal=$goal")
+        }
         currentGoal = goal
         alreadyNotified = false
-        Log.d(TAG, "가이드 대상 등록: pkg=$packageName, goal=$goal")
     }
 
     /**
@@ -77,6 +84,14 @@ class BoundaryChecker {
         // 시스템 UI 패키지는 무시 (알림 바, 키보드 등)
         if (SYSTEM_PACKAGES.any { eventPackage.contains(it) }) {
             return CheckResult.SYSTEM_UI_IGNORED
+        }
+
+        // 실제 목표 앱이 열리기를 기다리던 상태였다면, 처음 감지된 비시스템 앱을 타겟으로 확정합니다.
+        if (target == "WAITING_FOR_REAL_APP") {
+            targetPackageName = eventPackage
+            Log.d(TAG, "실제 목표 앱 감지됨 -> 타겟 패키지 자동 갱신: $eventPackage")
+            alreadyNotified = false
+            return CheckResult.ON_TRACK
         }
 
         // 패키지명이 일치하면 정상

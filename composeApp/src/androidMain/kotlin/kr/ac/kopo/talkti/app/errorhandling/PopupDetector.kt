@@ -18,8 +18,7 @@ class PopupDetector {
 
     sealed class PopupResult {
         object NoPopup : PopupResult()
-        object AutoClosed : PopupResult()
-        data class RequireManualClose(val popupRect: Rect) : PopupResult()
+        data class RequireManualClose(val popupRect: Rect, val isExactButton: Boolean) : PopupResult()
     }
 
     companion object {
@@ -68,25 +67,23 @@ class PopupDetector {
             // 1순위: 텍스트 기반 닫기 버튼 탐색
             val textCloseNode = findCloseButtonByText(rootNode)
             if (textCloseNode != null) {
-                val clicked = clickNode(textCloseNode)
-                Log.d(TAG, "텍스트 기반 팝업 닫기 시도: ${textCloseNode.text ?: textCloseNode.contentDescription} → 결과=$clicked")
-                if (clicked) return PopupResult.AutoClosed
+                val rect = Rect()
+                textCloseNode.getBoundsInScreen(rect)
+                Log.d(TAG, "텍스트 기반 닫기 버튼 감지됨 -> 수동 제어 유도: ${textCloseNode.text ?: textCloseNode.contentDescription}")
+                return PopupResult.RequireManualClose(rect, isExactButton = true)
             }
 
             // 2순위: 이미지(X 아이콘) 기반 닫기 버튼 탐색
             val imageCloseNode = findCloseButtonByImage(rootNode, popupWindow)
             if (imageCloseNode != null) {
-                val clicked = clickNode(imageCloseNode)
-                Log.d(TAG, "이미지 기반 팝업 닫기 시도 → 결과=$clicked")
-                if (clicked) return PopupResult.AutoClosed
+                val rect = Rect()
+                imageCloseNode.getBoundsInScreen(rect)
+                Log.d(TAG, "이미지 기반 닫기 버튼 감지됨 -> 수동 제어 유도")
+                return PopupResult.RequireManualClose(rect, isExactButton = true)
             }
 
-            // 3순위: 닫기 버튼은 없지만 팝업 창이 확실한 경우
-            // 강제 뒤로가기는 앱이 종료될 위험이 있으므로 수동 제어를 유도합니다.
-            Log.d(TAG, "명시적 닫기 버튼이 없는 팝업 감지. 사용자 직접 제어 유도")
-            val rect = Rect()
-            popupWindow.getBoundsInScreen(rect)
-            return PopupResult.RequireManualClose(rect)
+            // 닫기 버튼이 명확하지 않은 작은 윈도우는 정상적인 UI(예: 플로팅 버튼, 하단 탭)일 확률이 높으므로 
+            // 팝업으로 간주하여 강제로 차단하지 않고 무시합니다.
         }
 
         return PopupResult.NoPopup
@@ -103,14 +100,16 @@ class PopupDetector {
     private fun findPopupWindows(allWindows: List<AccessibilityWindowInfo>): List<AccessibilityWindowInfo> {
         val result = mutableListOf<AccessibilityWindowInfo>()
 
-        // 가장 큰 윈도우(메인 앱)의 크기를 기준으로 삼음
+        // 가장 큰 윈도우(메인 앱)의 크기 및 Rect 기준 설정
         var mainWindowArea = 0L
+        var mainRect = Rect()
         for (w in allWindows) {
             val rect = Rect()
             w.getBoundsInScreen(rect)
             val area = (rect.width().toLong()) * rect.height().toLong()
             if (area > mainWindowArea) {
                 mainWindowArea = area
+                mainRect = rect
             }
         }
 
@@ -132,12 +131,18 @@ class PopupDetector {
             // 메인 윈도우보다 작은 윈도우 = 팝업/다이얼로그일 가능성 높음
             val isSmaller = mainWindowArea > 0 && windowArea < mainWindowArea * 0.95
 
+            // 가로 또는 세로 방향으로 메인 화면을 거의 채우는 레이아웃 패널인지 확인 (사이드바, 상하단 바 등 오인식 방지)
+            val isFullWidth = mainWindowArea > 0 && windowRect.width() * 10 >= mainRect.width() * 9
+            val isFullHeight = mainWindowArea > 0 && windowRect.height() * 10 >= mainRect.height() * 9
+            val isLayoutPanel = isFullWidth || isFullHeight
+
             // 다이얼로그 내부에 닫기 관련 텍스트가 있으면 팝업으로 확정
             val hasCloseHint = hasAnyCloseKeyword(root)
 
-            if (isSmaller || hasCloseHint) {
+            // 크기가 작으면서 동시에 "닫기" 힌트가 있고, 레이아웃 패널이 아니어야 팝업으로 간주
+            if (isSmaller && !isLayoutPanel && hasCloseHint) {
                 result.add(window)
-                Log.d(TAG, "팝업 후보: pkg=$pkgName, area=$windowArea (메인=$mainWindowArea), hasCloseHint=$hasCloseHint")
+                Log.d(TAG, "팝업 후보 발견: pkg=$pkgName, bounds=$windowRect, isLayoutPanel=$isLayoutPanel, hasCloseHint=$hasCloseHint")
             }
         }
 
@@ -269,12 +274,5 @@ class PopupDetector {
             current = current.parent
         }
         return null
-    }
-
-    /**
-     * 노드에 ACTION_CLICK을 수행합니다.
-     */
-    private fun clickNode(node: AccessibilityNodeInfo): Boolean {
-        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 }
