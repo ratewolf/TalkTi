@@ -6,7 +6,6 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import android.text.TextUtils
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -18,11 +17,11 @@ import kr.ac.kopo.talkti.models.Candidate
 /**
  * 범용 후보 선택 오버레이 매니저
  *
- * 특정 앱의 비즈니스 로직(목적지, 경로, 채팅 등)에 종속되지 않고
- * 화면의 Candidate 리스트를 받아 물리 터치 가능한 오버레이를 표시한다.
+ * 후보 목록의 min/max bounds를 계산하여 하나의 전체 영역을 빨간 테두리로 감싸고,
+ * 상단에 "원하는 항목을 선택하세요" 배지를 표시한다.
  *
- * 사용자가 특정 오버레이를 터치하면
- * 모든 오버레이를 제거하고 선택된 Candidate를 콜백으로 반환한다.
+ * FLAG_NOT_TOUCHABLE을 적용하여 터치를 가로채지 않고,
+ * 사용자가 실제 앱 리스트를 직접 클릭할 수 있도록 한다.
  */
 class CandidateOverlayManager(
     private val context: Context
@@ -32,25 +31,6 @@ class CandidateOverlayManager(
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
     private val overlayViews = mutableListOf<View>()
-
-    /**
-     * 유니코드 원형 숫자 반환
-     */
-    private fun getCircledNumber(index: Int): String {
-
-        val circledNumbers = arrayOf(
-            "①", "②", "③", "④", "⑤",
-            "⑥", "⑦", "⑧", "⑨", "⑩",
-            "⑪", "⑫", "⑬", "⑭", "⑮",
-            "⑯", "⑰", "⑱", "⑲", "⑳"
-        )
-
-        return if (index in circledNumbers.indices) {
-            circledNumbers[index]
-        } else {
-            "(${index + 1})"
-        }
-    }
 
     /**
      * 후보 목록 표시
@@ -67,115 +47,113 @@ class CandidateOverlayManager(
             "showCandidates 호출됨. 후보 개수: ${candidates.size}"
         )
 
-        candidates.forEachIndexed { index, candidate ->
+        val validCandidates = candidates.filter { c ->
+            val b = c.bounds
+            b.left < b.right && b.top < b.bottom
+        }
 
-            val bounds = candidate.bounds
+        if (validCandidates.isEmpty()) {
+            Log.d("CandidateOverlay", "유효한 후보가 없어 표시하지 않습니다.")
+            return
+        }
 
-            val container = FrameLayout(context).apply {
+        val minLeft = validCandidates.minOf { it.bounds.left }
+        val minTop = validCandidates.minOf { it.bounds.top }
+        val maxRight = validCandidates.maxOf { it.bounds.right }
+        val maxBottom = validCandidates.maxOf { it.bounds.bottom }
 
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#FFE000"))
-                    setStroke(dp(3), Color.BLACK)
-                    cornerRadius = dp(8).toFloat()
-                }
+        val badgeHeightPx = dp(36)
 
-                isClickable = true
-                isFocusable = true
+        val containerWidth = (maxRight - minLeft).coerceAtLeast(dp(60))
+        val containerHeight = (maxBottom - minTop).coerceAtLeast(dp(36))
+
+        val root = FrameLayout(context).apply {
+            isClickable = false
+            isFocusable = false
+        }
+
+        // ────────────────────────────────────────────────
+        // 1. 후보 목록 전체 영역 테두리
+        // ────────────────────────────────────────────────
+        val borderView = View(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(3), Color.parseColor("#FF3B30")) // 빨간 테두리
+                cornerRadius = dp(8).toFloat()
             }
+        }
 
-            val textView = TextView(context).apply {
+        val borderParams = FrameLayout.LayoutParams(
+            containerWidth,
+            containerHeight
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        }
 
-                text =
-                    "${getCircledNumber(index)} ${candidate.text}"
+        root.addView(borderView, borderParams)
 
-                setTextColor(Color.BLACK)
-                textSize = 15f
-                typeface = Typeface.DEFAULT_BOLD
+        // ────────────────────────────────────────────────
+        // 2. 상단 안내 배지
+        // ────────────────────────────────────────────────
+        val badgeView = TextView(context).apply {
+            text = "원하는 항목을 선택하세요"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            val padH = dp(12)
+            val padV = dp(6)
+            setPadding(padH, padV, padH, padV)
 
-                gravity = Gravity.CENTER
-
-                val padding = dp(6)
-                setPadding(
-                    padding,
-                    padding,
-                    padding,
-                    padding
-                )
-
-                maxLines = 2
-                ellipsize = TextUtils.TruncateAt.END
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.parseColor("#FF3B30")) // 빨간색 채우기
+                setStroke(dp(1), Color.BLACK) // 검은색 얇은 테두리
+                cornerRadius = dp(6).toFloat()
             }
+        }
 
-            val childParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            ).apply {
-                gravity = Gravity.CENTER
+        val badgeParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            badgeHeightPx
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        }
+
+        root.addView(badgeView, badgeParams)
+
+        // ────────────────────────────────────────────────
+        // 3. WindowManager 레이아웃 파라미터 (FLAG_NOT_TOUCHABLE 설정)
+        // ────────────────────────────────────────────────
+        val params = WindowManager.LayoutParams(
+            containerWidth,
+            containerHeight + badgeHeightPx,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+
+            gravity = Gravity.TOP or Gravity.START
+
+            x = minLeft
+            y = (minTop - badgeHeightPx).coerceAtLeast(0)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
+        }
 
-            container.addView(
-                textView,
-                childParams
-            )
-
-            container.setOnClickListener {
-
-                Log.d(
-                    "CandidateOverlay",
-                    "후보 선택: ${candidate.id} - ${candidate.text}"
-                )
-
-                clearOverlays()
-
-                onCandidateSelected(candidate)
-            }
-
-            val width =
-                (bounds.right - bounds.left)
-                    .coerceAtLeast(dp(40))
-
-            val height =
-                (bounds.bottom - bounds.top)
-                    .coerceAtLeast(dp(30))
-
-            val params = WindowManager.LayoutParams(
-                width,
-                height,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-
-                gravity = Gravity.TOP or Gravity.START
-
-                x = bounds.left
-                y = bounds.top
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
-            }
-
-            try {
-
-                windowManager.addView(
-                    container,
-                    params
-                )
-
-                overlayViews.add(container)
-
-            } catch (e: Exception) {
-
-                Log.e(
-                    "CandidateOverlay",
-                    "오버레이 추가 실패: ${e.message}",
-                    e
-                )
-            }
+        try {
+            windowManager.addView(root, params)
+            overlayViews.add(root)
+            Log.d("CandidateOverlay", "전체 후보 영역 강조 오버레이 추가 성공")
+        } catch (e: Exception) {
+            Log.e("CandidateOverlay", "오버레이 추가 실패: ${e.message}", e)
         }
     }
 
@@ -216,4 +194,4 @@ class CandidateOverlayManager(
                         context.resources.displayMetrics.density
                 ).toInt()
     }
-}
+}
