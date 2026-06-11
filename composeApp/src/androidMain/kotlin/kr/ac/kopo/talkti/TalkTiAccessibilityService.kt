@@ -897,34 +897,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
 
         // 1. 의도 파악 (공백 제거 기반 키워드 매칭)
-        val routeKeywords = listOf("가자", "가는길찾아줘", "길찾아줘", "찾아줘", "어떻게가", "가고싶어", "알려줘", "길찾기")
-        val isRouteCommand = routeKeywords.any { cleanCmd.contains(it) || cleanCmd.endsWith(it) }
-
-        // 현재 전면에 활성화된 앱 확인 (지도/택시 앱이 이미 켜져 있다면 로컬 딥링크 대신 LLM이 입력창 제어를 하도록 우회)
-        val currentPackage = rootInActiveWindow?.packageName?.toString() ?: ""
-        val mapAndTaxiPackages = listOf("com.kakao.taxi", "net.daum.android.map", "com.nhn.android.nmap")
-        val isMapOrTaxiActive = mapAndTaxiPackages.contains(currentPackage)
-
-        if (isRouteCommand && !isMapOrTaxiActive) {
-            val destination = cleanSearchQuery(command)
-            if (destination.isNotBlank()) {
-                // 카카오맵 또는 네이버지도 앱 딥링크 실행
-                val launchedPkg = openAppByName("net.daum.android.map", destination)
-                    ?: openAppByName("com.nhn.android.nmap", destination)
-                if (launchedPkg != null) {
-                    errorHandlingManager.onGuideStarted(launchedPkg, command)
-                    return true
-                }
-            }
-        }
-
-        if (cleanCmd.endsWith("가자")) {
         val routeKeywords = listOf("가자", "가는길찾아줘", "길찾아줘", "찾아달라니까", "찾아줘", "어떻게가", "가고싶어", "알려줘", "길찾기")
         val isRouteCommand = routeKeywords.any { cleanCmd.endsWith(it) || cleanCmd.contains(it) }
-
         val isAppOpenCmd = cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || cleanCmd.contains("보여줘")
 
-        // 1. 하이브리드 모드: 정확한 NLP 파싱 및 딥링크 앱 실행 후 LLM 연속 루프에 제어권 이양
+        // 2. 하이브리드 모드: 정확한 NLP 파싱 및 딥링크 앱 실행 후 LLM 연속 루프에 제어권 이양
         if (isRouteCommand && !isAppOpenCmd) {
             val destination = cleanSearchQuery(command)
             if (destination.isNotBlank()) {
@@ -940,13 +917,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
+        // 3. Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
             startSelectionFlow(isContinuation = false)
             return true
         }
 
-        // 3. 단순 앱 실행 명령
+        // 4. 단순 앱 실행 명령
         if (isAppOpenCmd) {
             val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
             if (launchedPkg != null) {
@@ -956,9 +933,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 return true
             }
         }
-        
+
         return false
     }
+
 
     fun captureScreenForLLM(userCommand: String) {
         removeTargetHighlight()
@@ -1430,46 +1408,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
 
         val params = WindowManager.LayoutParams(
-            (bounds.right - bounds.left).coerceAtLeast(10),
-            (bounds.bottom - bounds.top).coerceAtLeast(10),
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = bounds.left
-            y = bounds.top
-
-            // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            }
-        }
-
-        try {
-            highlightView = highlight
-            windowManager.addView(highlightView, params)
-            Log.d(TAG, "Highlight View 추가 성공")
-        } catch (e: Exception) {
-            Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
-        }
-
-        highlightJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(3000) // 3초간 유지 후 제거
-            removeTargetHighlight()
-
-        val highlight = android.view.View(this@TalkTiAccessibilityService).apply {
-            val strokeWidth = (6 * resources.displayMetrics.density).toInt() // 조금 더 두껍게
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setStroke(strokeWidth, color)
-                setColor(Color.TRANSPARENT)
-            }
-        }
-
-        val params = WindowManager.LayoutParams(
             (optimizedBounds.right - optimizedBounds.left).coerceAtLeast(10),
             (optimizedBounds.bottom - optimizedBounds.top).coerceAtLeast(10),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -1495,6 +1433,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
             Log.d(TAG, "Highlight View 추가 성공")
         } catch (e: Exception) {
             Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
+        }
+
+        highlightJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(3000) // 3초간 유지 후 제거
+            removeTargetHighlight()
         }
     }
 
@@ -2198,19 +2141,5 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
         return false
-            "자전거로",
-            "택시\\s*불러\\s*줘",
-            "길찾기",
-            "검색해\\s*줘",
-            "가\\s*줘",
-            "갈래",
-            "가자",
-            "으로"
-        )
-        for (pattern in patterns) {
-            clean = clean.replace(Regex(pattern), "")
-        }
-        return clean.trim()
     }
-
 }
