@@ -53,6 +53,7 @@ import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
 import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
+import kr.ac.kopo.talkti.app.guide.AgentSessionManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -89,6 +90,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
+
+    // ── 연속 가이드 세션 매니저 ──
+    private val agentSessionManager = AgentSessionManager()
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
@@ -195,6 +199,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .setTitle("TalkTi 종료")
             .setMessage("똑띠 서비스를 종료하시겠습니까?")
             .setPositiveButton("종료") { _, _ ->
+                agentSessionManager.endSession()
+                removeTargetHighlight()
                 disableSelf()
             }
             .setNegativeButton("취소", null)
@@ -211,6 +217,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
             llmJob = null
             LlmLoadingOverlay.hide()
             floatingMenuManager?.updateLoadingStatus(false)
+            agentSessionManager.endSession()
+            removeTargetHighlight()
             speakTts("요청을 취소했습니다.")
             return
         }
@@ -236,6 +244,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
                     if (!processLocalCommand(command)) {
+                        agentSessionManager.startSession(command)
                         captureScreenForLLM(command)
                     }
                 }
@@ -269,6 +278,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             handleSelectionResponse(userCommand)
                         } else {
                             if (!processLocalCommand(userCommand)) {
+                                agentSessionManager.startSession(userCommand)
                                 captureScreenForLLM(userCommand)
                             }
                         }
@@ -430,6 +440,34 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     pendingCommand = null
                     mediaType = null
                     return
+                }
+            }
+        }
+
+        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 활성화된 가이드 하이라이트 오버레이 제거
+        // (단, 우리 앱 자체의 오버레이 창이 추가되면서 생기는 WINDOW_STATE_CHANGED 이벤트는 무시)
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName)) {
+            removeTargetHighlight()
+        }
+
+        // ── 연속 가이드 티키타카 로직 ──
+        // 화면에 변화가 생기거나 클릭이 일어났을 때, 세션이 진행 중이면 자동 캡처 후 서버 전송
+        if (agentSessionManager.isActive) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || 
+                event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+                
+                if (agentSessionManager.canCapture(3000)) {
+                    val currentGoal = agentSessionManager.currentGoal
+                    if (currentGoal != null) {
+                        Log.d(TAG, "티키타카 루프 동작: 화면 전환/클릭 감지 -> 캡처 전송 (목표: \$currentGoal)")
+                        CoroutineScope(Dispatchers.Main).launch {
+                            delay(800) // [수정] 반응 속도를 올리기 위해 대기 시간 단축 (1000ms -> 800ms)
+                            if (!LlmLoadingOverlay.isShowing) {
+                                captureScreenForLLM(currentGoal)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -881,41 +919,49 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
 
         if (cleanCmd.endsWith("가자")) {
+        val routeKeywords = listOf("가자", "가는길찾아줘", "길찾아줘", "찾아달라니까", "찾아줘", "어떻게가", "가고싶어", "알려줘", "길찾기")
+        val isRouteCommand = routeKeywords.any { cleanCmd.endsWith(it) || cleanCmd.contains(it) }
 
-            val destination =
-                cleanCmd.removeSuffix("가자").trim()
+        val isAppOpenCmd = cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || cleanCmd.contains("보여줘")
 
+        // 1. 하이브리드 모드: 정확한 NLP 파싱 및 딥링크 앱 실행 후 LLM 연속 루프에 제어권 이양
+        if (isRouteCommand && !isAppOpenCmd) {
+            val destination = cleanSearchQuery(command)
             if (destination.isNotBlank()) {
-
-                autoDestinationQuery = destination
-                isAutoDestinationFlowActive = true
-
-                pendingCommand = destination
-
-                speakTts("${destination}을 검색합니다.")
-
+                val launchedPkg = openAppByName("지도", destination)
+                if (launchedPkg != null) {
+                    errorHandlingManager.onGuideStarted(launchedPkg, command)
+                    // 노란색 오버레이 하드코딩 매크로 대신, 깨끗한 LLM 연속 루프로 전환
+                    agentSessionManager.startSession(command)
+                } else {
+                    speakTts("${destination}을 검색할 수 있는 지도 앱이 없습니다.")
+                }
                 return true
             }
         }
-        // [추가] Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
+
+        // 2. Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
             startSelectionFlow(isContinuation = false)
             return true
         }
-        val isAppOpenCmd =
-            cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") ||
-                    cleanCmd.contains("보여줘")
 
-        if (!isAppOpenCmd) return false
-        val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
-        if (launchedPkg != null) {
-            errorHandlingManager.onGuideStarted(launchedPkg, command)
-            return true
+        // 3. 단순 앱 실행 명령
+        if (isAppOpenCmd) {
+            val launchedPkg = openAppByName(cleanCmd, cleanSearchQuery(command))
+            if (launchedPkg != null) {
+                errorHandlingManager.onGuideStarted(launchedPkg, command)
+                // 길찾기뿐만 아니라, 일반 앱(유튜브, 카톡, 갤러리 등)을 실행한 후에도 무조건 LLM 연속 루프로 전환
+                agentSessionManager.startSession(command)
+                return true
+            }
         }
+        
         return false
     }
 
     fun captureScreenForLLM(userCommand: String) {
+        removeTargetHighlight()
         val screenSessionId = "screen_${System.currentTimeMillis()}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
@@ -969,7 +1015,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
                 floatingMenuManager?.bringToFront()
                 floatingMenuManager?.updateLoadingStatus(true)
-                speakTts("어떻게 도와드릴지 찾고 있어요. 잠시만 기다려주세요.")
+                speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
             }
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
@@ -986,6 +1032,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
                     floatingMenuManager?.updateLoadingStatus(false)
+                    
+                    if (response.actionType == "FINISH") {
+                        Log.d(TAG, "가이드 완전 종료 신호 (FINISH) 수신 -> 세션 종료")
+                        agentSessionManager.endSession()
+                        removeTargetHighlight()
+                    }
+                    
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
                     speakTts(response.ttsMessage, utteranceId)
@@ -993,8 +1046,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
                     val highlightColor = if (response.actionType == "ASK_USER") Color.YELLOW else Color.RED
 
-                    response.targetBounds?.let { bounds ->
-                        showTargetHighlight(bounds, response.ttsMessage, highlightColor)
+                    val targetBounds = response.targetBounds
+                    if (targetBounds != null) {
+                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor)
+                    } else {
+                        removeTargetHighlight()
                     }
 
                     if (response.actionType == "OPEN_APP") {
@@ -1018,7 +1074,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             errorHandlingManager.onGuideStarted(currentPkg, command)
                         }
                     }
-
                     if (response.actionType == "OPEN_APP") {
                         // OPEN_APP 처리는 이미 위에서 완료
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
@@ -1028,26 +1083,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 delay(1000)
                                 val success = performImmediateActionSetText(bounds, response.actionArguments!!)
                                 if (!success) {
-                                    pendingCommand = response.actionArguments!!
-                                    performImmediateActionClick(bounds)
+                                    // [수정] 자동 클릭 기능을 전면 제거하여 사용자 직접 클릭 유도
+                                    // performImmediateActionClick(bounds)
                                 }
                             }
                         }
                     } else if (response.actionType == "CLICK") {
-                        println("자동 클릭 예약 실행")
-                        val targetText = if (!response.actionArguments.isNullOrBlank()) {
-                            response.actionArguments!!
-                        } else {
-                            cleanSearchQuery(command)
-                        }
-
+                        println("자동 클릭 예약 실행 (사용자 클릭 유도로 변경하여 자동 클릭 비활성화)")
                         response.targetBounds?.let { bounds ->
                             CoroutineScope(Dispatchers.Main).launch {
                                 delay(1000)
-                                val success = performImmediateActionClick(bounds)
-                                if (success) {
-                                    pendingCommand = targetText
-                                }
+                                // [수정] 자동 클릭 기능을 제거하여 사용자가 하이라이트를 보고 직접 클릭하도록 함
+                                // performImmediateActionClick(bounds)
+                                // LLM 모드에서는 pendingCommand를 사용한 강제 주입을 하지 않고 LLM 루프에 맡김
                             }
                         }
                     }
@@ -1367,7 +1415,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
-        Log.d(TAG, "showTargetHighlight: bounds=$bounds, color=$color")
+        val optimizedBounds = findOptimizedBounds(bounds)
+        Log.d(TAG, "showTargetHighlight: original=$bounds, optimized=$optimizedBounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         removeTargetHighlight()
@@ -1411,6 +1460,41 @@ class TalkTiAccessibilityService : AccessibilityService() {
         highlightJob = CoroutineScope(Dispatchers.Main).launch {
             delay(3000) // 3초간 유지 후 제거
             removeTargetHighlight()
+
+        val highlight = android.view.View(this@TalkTiAccessibilityService).apply {
+            val strokeWidth = (6 * resources.displayMetrics.density).toInt() // 조금 더 두껍게
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setStroke(strokeWidth, color)
+                setColor(Color.TRANSPARENT)
+            }
+        }
+
+        val params = WindowManager.LayoutParams(
+            (optimizedBounds.right - optimizedBounds.left).coerceAtLeast(10),
+            (optimizedBounds.bottom - optimizedBounds.top).coerceAtLeast(10),
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or // 좌표계 일치를 위해 추가
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,   // 화면 밖으로 나가는 것 허용
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = optimizedBounds.left
+            y = optimizedBounds.top
+
+            // 디스플레이 컷아웃(노치) 영역까지 그리기 확장
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+
+        try {
+            highlightView = highlight
+            windowManager.addView(highlightView, params)
+            Log.d(TAG, "Highlight View 추가 성공")
+        } catch (e: Exception) {
+            Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
         }
     }
 
@@ -1421,6 +1505,66 @@ class TalkTiAccessibilityService : AccessibilityService() {
             windowManager.removeView(it)
             highlightView = null
         }
+    }
+
+    private fun findOptimizedBounds(bounds: RectDto): RectDto {
+        val activeWindows = windows ?: emptyList()
+        var foundNode: AccessibilityNodeInfo? = null
+        
+        fun traverse(node: AccessibilityNodeInfo?) {
+            if (node == null || foundNode != null) return
+            if (node.isVisibleToUser) {
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                    foundNode = node
+                    return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                traverse(node.getChild(i))
+            }
+        }
+        
+        if (activeWindows.isNotEmpty()) {
+            for (window in activeWindows) {
+                if (foundNode != null) break
+                traverse(window.root)
+            }
+        }
+        if (foundNode == null) {
+            traverse(rootInActiveWindow)
+        }
+        
+        val node = foundNode ?: return bounds
+        var bestNode: AccessibilityNodeInfo = node
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        
+        var temp: AccessibilityNodeInfo? = node
+        var count = 0
+        while (temp != null && count < 3) {
+            if (temp.isClickable) {
+                val tempRect = Rect()
+                temp.getBoundsInScreen(tempRect)
+                
+                val bestRect = Rect()
+                bestNode.getBoundsInScreen(bestRect)
+                
+                // 화면의 가로 폭 전체를 거의 다 덮거나 세로로 너무 거대하지 않은 적절한 크기의 클릭 가능한 컨테이너만 선택
+                if (tempRect.width() > bestRect.width() || tempRect.height() > bestRect.height()) {
+                    if (tempRect.width() < screenWidth * 0.95 && tempRect.height() < screenHeight * 0.4) {
+                        bestNode = temp
+                    }
+                }
+            }
+            temp = temp.parent
+            count++
+        }
+        
+        val finalRect = Rect()
+        bestNode.getBoundsInScreen(finalRect)
+        return RectDto(finalRect.left, finalRect.top, finalRect.right, finalRect.bottom)
     }
 
     private fun performImmediateActionSetText(bounds: RectDto, text: String): Boolean {
@@ -1568,9 +1712,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
         var result = command
 
         // 정규표현식 패턴 목록 정의
+        var clean = command.replace(".", "").replace(",", "")
         val patterns = listOf(
-            // 서술어/조사
+            "지금\\s*내\\s*위치에서",
+            "내\\s*위치에서",
+            "현재\\s*위치에서",
             "으로\\s*가\\s*줘",
+            "가는\\s*길\\s*찾아\\s*달라니까",
             "가는\\s*길\\s*찾아\\s*줘",
             "가는\\s*길\\s*알려\\s*줘",
             "가는\\s*경로\\s*알려\\s*줘",
@@ -2050,6 +2198,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
         return false
+            "자전거로",
+            "택시\\s*불러\\s*줘",
+            "길찾기",
+            "검색해\\s*줘",
+            "가\\s*줘",
+            "갈래",
+            "가자",
+            "으로"
+        )
+        for (pattern in patterns) {
+            clean = clean.replace(Regex(pattern), "")
+        }
+        return clean.trim()
     }
 
 }
