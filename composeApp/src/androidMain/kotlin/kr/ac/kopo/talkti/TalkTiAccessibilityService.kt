@@ -5,7 +5,6 @@ import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
-import androidx.annotation.RequiresApi
 import android.graphics.Bitmap
 import android.util.Base64
 import android.view.Display
@@ -100,7 +99,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var highlightView: android.view.View? = null
     private var highlightJob: Job? = null
     private var pendingCommand: String? = null
-    private var autoDestinationQuery: String? = null
     private var isAutoDestinationFlowActive = false
     private var lastSpokenTtsMessage: String? = null
     private var lastSpokenTtsTime: Long = 0L
@@ -169,8 +167,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         testReceiver = receiver
         val filter = android.content.IntentFilter("kr.ac.kopo.talkti.TEST_COMMAND")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, RECEIVER_EXPORTED)
         } else {
             registerReceiver(receiver, filter)
         }
