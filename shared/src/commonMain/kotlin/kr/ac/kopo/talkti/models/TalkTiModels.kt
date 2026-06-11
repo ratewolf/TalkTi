@@ -27,7 +27,8 @@ data class ScreenStateRequest(
     val uiTreeJson: String,
     val screenshotBase64: String? = null,
     val screenSessionId: String? = null,
-    val installedApps: List<AppInfo>? = null
+    val installedApps: List<AppInfo>? = null,
+    val currentPackageName: String? = null
 )
 
 @Serializable

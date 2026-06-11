@@ -54,7 +54,12 @@ class AnalyzeService(
         val combinedPrompt = """
             ${PromptTemplates.SCREEN_ANALYZE_SYSTEM_PROMPT}
             
-            ${PromptTemplates.buildScreenAnalyzePrompt(request.userVoiceCommand, simplifiedJson, installedAppsJson)}
+            ${PromptTemplates.buildScreenAnalyzePrompt(
+                request.userVoiceCommand,
+                simplifiedJson,
+                installedAppsJson,
+                request.currentPackageName
+            )}
         """.trimIndent()
 
         println("--- Claude 호출 시작 ---")
