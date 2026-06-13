@@ -182,6 +182,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
 
         uiChangeDetector?.onMeaningfulChange = { uiTreeJson ->
+            removeTargetHighlight()
             val orchestrator = guideOrchestrator
             if (orchestrator != null && orchestrator.isActive) {
                 // 현재 패키지명 업데이트
@@ -1131,15 +1132,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             }
                             val launchedPkg = openAppByName(targetId, query)
                             if (launchedPkg != null) {
-                                if (isMapPackage(launchedPkg)) {
-                                    Log.d(TAG, "지도/내비 앱 실행 후 가이드 세션 종료 및 가이드 정지")
-                                    agentSessionManager.endSession()
-                                    guideOrchestrator?.stopGuide()
-                                    removeTargetHighlight()
-                                } else {
-                                    errorHandlingManager.onGuideStarted(launchedPkg, command)
-                                    startGuideFlow(command, launchedPkg)
-                                }
+                                Log.d(TAG, "앱 실행 후 가이드 흐름 진행 (패키지: $launchedPkg)")
+                                errorHandlingManager.onGuideStarted(launchedPkg, command)
+                                startGuideFlow(command, launchedPkg)
                             }
                         }
                     } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {

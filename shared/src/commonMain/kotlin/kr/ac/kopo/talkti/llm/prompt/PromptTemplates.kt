@@ -69,8 +69,8 @@ object PromptTemplates {
         
         [응답 JSON 스키마]
         {
-          "candidateId": "UI 요소의 candidateId 또는 실행할 앱의 packageName (해당 없을 경우 null)",
-          "actionType": "행동 유형 (CLICK, ASK_USER, ACTION_SET_TEXT, OPEN_APP)",
+          "candidateId": "UI 요소의 candidateId 또는 실행할 앱의 packageName (GUIDE 액션의 경우 하이라이트할 전체 목록 영역 컨테이너의 candidateId, 해당 없을 경우 null)",
+          "actionType": "행동 유형 (CLICK, ASK_USER, ACTION_SET_TEXT, OPEN_APP, GUIDE)",
           "arguments": "실행할 앱에서 검색할 목적지 키워드 또는 입력창에 입력할 정제된 텍스트. (OPEN_APP 또는 ACTION_SET_TEXT 시 사용, 해당 없을 경우 null. 주의: 사용자가 현재 발화에서 이동 수단만 대답한 경우(예: '버스', '차로'), 대화 이력에서 목적지명(예: '남영역')을 찾아 arguments에 목적지명만 넣어야 합니다. 사용자 발화나 대화 이력에서 '가줘', '어떻게 가', '검색해줘', '으로', '가고 싶어' 등 불필요한 조사, 어미, 질문형 표현, 동사를 완전히 제거하고 '삼성병원', '남영역' 같이 실제 입력창에 검색할 정제된 키워드/명칭만 추출해서 넣으세요.)",
           "ttsMessage": "어르신께 읽어드릴 음성 안내",
           "confidence": 확신도 (0.0 ~ 1.0)
@@ -97,6 +97,11 @@ object PromptTemplates {
              * candidateId = "com.skt.tmap.ku" (티맵 패키지명. 만약 설치되어 있지 않으면 com.skt.tmap 실행)
              * arguments = "[이전 대화 이력의 목적지명]" (예: "남영역")
              * ttsMessage = "네, 티맵을 켜서 [목적지]로 가는 자동차 길 안내를 시작할게요."
+
+        3. 사용자가 장소를 선택해야 하는 화면(목적지 검색 결과 목록 등)에서의 가이드 규칙:
+           - 사용자가 "첫 번째 것 눌러줘", "대신 검색해줘" 등 대행 요청을 하지 않았다면 절대 특정 장소를 자동으로 클릭(CLICK)하지 마세요.
+           - 이 경우, actionType = "GUIDE"로 설정하고, candidateId에는 장소 목록 전체를 감싸는 레이아웃 컨테이너(예: RecyclerView, ListView 등)의 candidateId를 넣으며, ttsMessage는 "어르신, 아래 목록 중에서 가고 싶으신 곳을 손가락으로 눌러주세요."로 지정하여 어르신이 직접 선택할 수 있게 오버레이 가이드만 보여줍니다.
+           - 만약 해당 리스트 컨테이너 노드를 찾기 어려우면 리스트 전체를 덮는 가장 적합한 상위 View 컴포넌트의 candidateId를 지정하세요.
 
         [핵심 규칙 - 반드시 순차적으로 1단계씩 소통하세요!]
         1. [앱 실행] 만약 사용자의 명령이 특정 앱을 실행해 달라는 의미라면, [스마트폰에 설치된 앱 리스트]에서 가장 적합한 packageName을 찾아 candidateId에 넣고 actionType을 OPEN_APP으로 설정하세요. 이때, 사용자가 가고자 하는 목적지 키워드(예: "삼성병원")를 정제하여 arguments에 포함하세요.
