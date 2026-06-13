@@ -61,7 +61,8 @@ import kr.ac.kopo.talkti.app.guide.AgentSessionManager
 class TalkTiAccessibilityService : AccessibilityService() {
 
     companion object {
-        private var instance: TalkTiAccessibilityService? = null
+        var instance: TalkTiAccessibilityService? = null
+            private set
 
         fun setOverlayVisible(visible: Boolean) {
             instance?.let {
