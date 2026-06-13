@@ -11,6 +11,7 @@ import io.ktor.client.request.header
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.coroutines.*
+import kr.ac.kopo.talkti.TalkTiAccessibilityService
 import kr.ac.kopo.talkti.models.*
 import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
@@ -227,9 +228,14 @@ class GuideOrchestrator(
             return
         }
 
-        // 같은 상태인데 타겟도 같으면 스킵
+        // 동일 상태 및 동일 타겟(ID 또는 텍스트 기준) 판단
+        val isSameStateAndTargets = newState == currentState && 
+            (response.targets.map { it.candidateId } == currentTargets.map { it.candidateId } ||
+             response.targets.map { it.text } == currentTargets.map { it.text })
+
+        // 꿀틀거림 방지: 좌표까지 완전 일치한다면 오버레이 재생성 및 TTS 모두 스킵하여 화면 깜빡임 차단
         if (newState == currentState && response.targets == currentTargets) {
-            Log.d(TAG, "[디버그] 동일 가이드 상태 및 동일 타겟 목록 감지 — 오버레이 및 TTS 스킵")
+            Log.d(TAG, "[디버그] 동일 가이드 상태 및 완전히 동일한 좌표 감지 — 업데이트 건너뜀")
             return
         }
 
@@ -237,7 +243,7 @@ class GuideOrchestrator(
         currentState = newState
         currentTargets = response.targets
 
-        // 기존 오버레이 정리
+        // 기존 오버레이 정리 및 재배치 (좌표가 변경되었을 수 있으므로 항상 실행)
         candidateOverlayManager.clearOverlays()
         actionButtonOverlayManager.clearHighlight()
 
@@ -266,9 +272,13 @@ class GuideOrchestrator(
             }
         }
 
-        // TTS 안내
+        // TTS 안내 (동일 타겟/상태면 스킵하여 안내 중복 방지)
         if (response.tts.isNotBlank()) {
-            speakTts(response.tts)
+            if (isSameStateAndTargets) {
+                Log.d(TAG, "[디버그] 동일 상태 및 동일 타겟 감지 -> TTS 재생 스킵 (중복 낭독 방지)")
+            } else {
+                speakTts(response.tts)
+            }
         }
     }
 
@@ -374,7 +384,7 @@ class GuideOrchestrator(
         if (targets.isEmpty()) return
 
         val candidates = targets.mapNotNull { t ->
-            val b = t.bounds
+            val b = TalkTiAccessibilityService.instance?.findOptimizedBounds(t.bounds) ?: t.bounds
             if (b.left >= b.right || b.top >= b.bottom) {
                 Log.w(TAG, "[디버그] 유효하지 않은 candidate bounds 발견하여 스킵: text=${t.text}, bounds=[l=${b.left}, t=${b.top}, r=${b.right}, b=${b.bottom}]")
                 null
@@ -382,7 +392,7 @@ class GuideOrchestrator(
                 Candidate(
                     id = t.candidateId,
                     text = t.text,
-                    bounds = t.bounds
+                    bounds = b
                 )
             }
         }
@@ -403,15 +413,15 @@ class GuideOrchestrator(
         if (targets.isEmpty()) return
 
         val first = targets.first()
-        val b = first.bounds
+        val b = TalkTiAccessibilityService.instance?.findOptimizedBounds(first.bounds) ?: first.bounds
         if (b.left >= b.right || b.top >= b.bottom) {
             Log.w(TAG, "[디버그] 유효하지 않은 action bounds 발견하여 오버레이 무시: text=${first.text}, bounds=[l=${b.left}, t=${b.top}, r=${b.right}, b=${b.bottom}]")
             return
         }
 
-        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, bounds=${first.bounds}")
+        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, bounds=$b")
         actionButtonOverlayManager.showActionButtonHighlight(
-            first.bounds,
+            b,
             first.text
         )
     }

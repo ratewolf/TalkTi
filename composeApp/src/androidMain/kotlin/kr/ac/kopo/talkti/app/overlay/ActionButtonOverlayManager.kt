@@ -100,15 +100,9 @@ class ActionButtonOverlayManager(
             borderView,
             borderParams
         )
-        root.setOnClickListener {
-
-            clearHighlight()
-
-            onActionSelected?.invoke()
-        }
 
         // ────────────────────────────────────────────────
-        // 4. WindowManager.LayoutParams
+        // 4. WindowManager.LayoutParams (터치 관통을 위해 FLAG_NOT_TOUCHABLE 설정)
         // ────────────────────────────────────────────────
 
         val params = WindowManager.LayoutParams(
@@ -116,7 +110,7 @@ class ActionButtonOverlayManager(
             buttonHeight,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT

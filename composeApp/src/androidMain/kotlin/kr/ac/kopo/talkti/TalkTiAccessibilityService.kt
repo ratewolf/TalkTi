@@ -511,11 +511,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 활성화된 가이드 하이라이트 오버레이 제거
+        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 활성화된 가이드 하이라이트 오버레이 및 TTS 정지/제거
         // (단, 우리 앱 자체의 오버레이 창이 추가되면서 생기는 WINDOW_STATE_CHANGED 이벤트는 무시)
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
             (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName)) {
             removeTargetHighlight()
+            candidateOverlayManager?.clearOverlays()
+            actionButtonOverlayManager?.clearHighlight()
+            textToSpeech?.stop()
         }
 
         // ── 연속 가이드 티키타카 로직 ──
@@ -1553,7 +1556,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun findOptimizedBounds(bounds: RectDto): RectDto {
+    fun findOptimizedBounds(bounds: RectDto): RectDto {
         val activeWindows = windows ?: emptyList()
         var foundNode: AccessibilityNodeInfo? = null
         
