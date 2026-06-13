@@ -37,7 +37,8 @@ class AnalyzeService(
         val actionType: String,
         val arguments: String? = null,
         val ttsMessage: String,
-        val confidence: Double = 0.0
+        val confidence: Double = 0.0,
+        val thought: String = ""
     )
 
     private val sessionHistories = java.util.concurrent.ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
@@ -96,6 +97,7 @@ class AnalyzeService(
                 }
 
                 val llmRes = json.decodeFromString(LlmResponse.serializer(), cleanJson)
+                println("🧠 LLM Thought (Sub-goal): ${llmRes.thought}")
                 println("✅ LLM 분석 성공: ${llmRes.ttsMessage} (Target: ${llmRes.candidateId})")
 
                 // 대화 이력 기록

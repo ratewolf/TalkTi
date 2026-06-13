@@ -1134,15 +1134,17 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             val launchedPkg = openAppByName(targetId, query)
                             if (launchedPkg != null) {
                                 Log.d(TAG, "앱 실행 후 가이드 흐름 진행 (패키지: $launchedPkg)")
-                                errorHandlingManager.onGuideStarted(launchedPkg, command)
-                                startGuideFlow(command, launchedPkg)
+                                val finalGoal = agentSessionManager.currentGoal ?: command
+                                errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
+                                startGuideFlow(finalGoal, launchedPkg)
                             }
                         }
                     } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {
                         val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                         if (currentPkg.isNotBlank()) {
-                            errorHandlingManager.onGuideStarted(currentPkg, command)
-                            startGuideFlow(command, currentPkg)
+                            val finalGoal = agentSessionManager.currentGoal ?: command
+                            errorHandlingManager.onGuideStarted(currentPkg, finalGoal)
+                            startGuideFlow(finalGoal, currentPkg)
                         }
                     } else {
                         Log.d(TAG, "대화형 상태(ASK_USER 등) 또는 기타 상태 - guideOrchestrator 가이드 흐름을 시작하지 않습니다.")

@@ -23,7 +23,8 @@ class GuideService(
         val state: String,
         val targets: List<LlmGuideTarget> = emptyList(),
         val tts: String,
-        val unchanged: Boolean = false
+        val unchanged: Boolean = false,
+        val thought: String = ""
     )
 
     @Serializable
@@ -59,6 +60,7 @@ class GuideService(
             try {
                 val cleanJson = extractJsonBlock(rawLlmRes)
                 val llmRes = json.decodeFromString(LlmGuideResponse.serializer(), cleanJson)
+                println("🧠 Guide LLM Thought (Sub-goal): ${llmRes.thought}")
                 println("✅ Guide LLM 분석 성공: state=${llmRes.state}, targets=${llmRes.targets.size}")
 
                 // LLM 이 선택한 candidateId 에 해당하는 좌표 매핑
@@ -257,7 +259,6 @@ class GuideService(
 [앱별 행동 가이드 규칙 (필수 준수)]
 - 지도 앱 (카카오맵, 네이버지도 등):
   * 장소 검색 결과 목록이 나타나면 상태는 SELECT_TARGET 이고 검색된 장소 목록들의 candidateId들을 선택하세요.
-  * 검색 결과 화면에서 상단의 필터 탭(예: "전체", "장소", "버스", "지하철", "MY" 등)은 절대 클릭하거나 선택하지 마세요. 사용자의 실제 목적지는 검색된 장소 목록(리스트) 영역에서 선택해야 합니다. 현재 사용자 요청에 "버스" 등의 교통 수단 키워드가 있더라도, 절대 상단의 "버스" 필터 탭을 눌러서는 안 되며 장소 목록 가이드에만 집중해야 합니다.
   * 연관 검색어(추천 검색어)보다 실제 장소를 우선 선택하세요.
   * 최근 검색어(히스토리)는 절대 선택하지 마세요.
   * '도착' 관련 버튼이 보이면 상태는 PRESS_ACTION 이고 해당 버튼을 선택하세요.
@@ -270,8 +271,15 @@ class GuideService(
   * 채팅방 목록은 SELECT_TARGET 이고 채팅방 목록들을 선택하세요.
   * '전송' 또는 '보내기' 관련 버튼은 PRESS_ACTION 이고 해당 버튼을 선택하세요.
 
+[의사결정 및 추론 단계 (thought 필드 필수 작성)]
+의사결정 시 아래 3단계 논리 프로세스를 따라 추론하고, 그 과정을 응답 JSON의 "thought" 필드에 요약하여 작성하세요:
+1. 전체 목표(Overall Task): 사용자가 최종적으로 달성하려는 앱 내 최종 행동 목표가 무엇인가?
+2. 이전 행동 및 UI 상태 분석(Context Analysis): 직전까지 어떤 행동을 취했으며, 현재 화면의 UI 배치와 활성화된 요소들의 시각적/기능적 역할은 무엇인가?
+3. 현재 하위 목표(Current Sub-goal): 전체 목표를 달성하기 위해 '지금 이 화면에서만' 안전하게 수행해야 할 유일한 다음 단계의 하위 목표는 무엇인가?
+
 [응답 JSON 스키마]
 {
+  "thought": "3단계 추론 프로세스의 요약 내용 (예: '최종목표는 대중교통 남영역 길찾기이며, 이전 단계에서 남영역 검색을 완료함. 현재 화면은 검색된 장소 목록들이 나열된 상태이므로, 다음 하위 목표는 구체적인 지점 하나를 골라 장소를 확정하는 것임. 따라서 다른 교통수단 필터 탭은 무시하고 장소 목록 영역만 가이드함.')",
   "state": "SELECT_TARGET | PRESS_ACTION | SELECT_OPTION | CONFIRM | COMPLETE | IDLE",
   "targets": [{"candidateId": "candidate_0", "text": "표시할 텍스트"}],
   "tts": "음성 안내 메시지",
