@@ -148,7 +148,7 @@ class ActionButtonOverlayManager(
 
             Log.d(
                 "ActionButtonOverlay",
-                "오버레이 추가 성공: $badgeText"
+                "오버레이 추가 성공: label=$label"
             )
 
         } catch (e: Exception) {
