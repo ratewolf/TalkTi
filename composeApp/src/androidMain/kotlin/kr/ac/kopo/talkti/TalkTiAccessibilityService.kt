@@ -289,7 +289,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
                     if (!processLocalCommand(command)) {
-                        agentSessionManager.startSession(command)
+                        if (!agentSessionManager.isActive) {
+                            agentSessionManager.startSession(command)
+                        }
                         captureScreenForLLM(command)
                     }
                 }
@@ -323,7 +325,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             handleSelectionResponse(userCommand)
                         } else {
                             if (!processLocalCommand(userCommand)) {
-                                agentSessionManager.startSession(userCommand)
+                                if (!agentSessionManager.isActive) {
+                                    agentSessionManager.startSession(userCommand)
+                                }
                                 captureScreenForLLM(userCommand)
                             }
                         }
