@@ -511,14 +511,36 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 활성화된 가이드 하이라이트 오버레이 및 TTS 정지/제거
-        // (단, 우리 앱 자체의 오버레이 창이 추가되면서 생기는 WINDOW_STATE_CHANGED 이벤트는 무시)
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
-            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName)) {
+        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 가이드 정지/제거 처리
+        // (단, 클릭의 경우 가이드된 타겟 영역을 터치했을 때만 제거되도록 하고, 화면 전환 시에는 무조건 제거)
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName) {
             removeTargetHighlight()
             candidateOverlayManager?.clearOverlays()
             actionButtonOverlayManager?.clearHighlight()
             textToSpeech?.stop()
+        } else if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            val clickedNode = event.source
+            if (clickedNode != null) {
+                val clickedRect = Rect()
+                clickedNode.getBoundsInScreen(clickedRect)
+                
+                val orchestrator = guideOrchestrator
+                val shouldClear = if (orchestrator != null && orchestrator.isActive) {
+                    orchestrator.isClickInsideTargets(clickedRect)
+                } else {
+                    true // 가이드 모드가 아닐 때는 즉시 제거
+                }
+                
+                if (shouldClear) {
+                    Log.d(TAG, "🎯 [타겟 영역 클릭 감지] 오버레이 및 TTS 즉시 정리")
+                    removeTargetHighlight()
+                    candidateOverlayManager?.clearOverlays()
+                    actionButtonOverlayManager?.clearHighlight()
+                    textToSpeech?.stop()
+                } else {
+                    Log.d(TAG, "⚠️ [타겟 외 영역 클릭 감지] 오버레이 유지")
+                }
+            }
         }
 
         // ── 연속 가이드 티키타카 로직 ──

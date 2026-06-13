@@ -437,6 +437,22 @@ class GuideOrchestrator(
     }
 
     /**
+     * 특정 클릭 이벤트의 좌표가 현재 가이드 타겟 영역 내에 포함되거나 겹치는지 검사한다.
+     */
+    fun isClickInsideTargets(clickedBounds: android.graphics.Rect): Boolean {
+        if (currentTargets.isEmpty()) return false
+        for (target in currentTargets) {
+            val b = target.bounds
+            val overlap = clickedBounds.left < b.right && clickedBounds.right > b.left &&
+                          clickedBounds.top < b.bottom && clickedBounds.bottom > b.top
+            if (overlap) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
      * 리소스를 정리한다.
      */
     fun destroy() {
