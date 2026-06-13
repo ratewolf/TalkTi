@@ -806,8 +806,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             //지도
             "지도" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "길찾기" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
-            "네비" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
-            "내비게이션" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
+            "네비" to listOf("com.skt.tmap.ku", "com.skt.tmap", "net.daum.android.map", "com.nhn.android.nmap"),
+            "내비게이션" to listOf("com.skt.tmap.ku", "com.skt.tmap", "net.daum.android.map", "com.nhn.android.nmap"),
+            "티맵" to listOf("com.skt.tmap.ku", "com.skt.tmap"),
             "카카오맵" to listOf("net.daum.android.map"),
             "카카오지도" to listOf("net.daum.android.map"),
             "네이버지도" to listOf("com.nhn.android.nmap"),
@@ -904,7 +905,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun isMapPackage(packageName: String): Boolean {
-        return packageName == "net.daum.android.map" || packageName == "com.nhn.android.nmap"
+        return packageName == "net.daum.android.map" || 
+               packageName == "com.nhn.android.nmap" || 
+               packageName == "com.skt.tmap.ku" || 
+               packageName == "com.skt.tmap"
     }
 
     private fun launchMapWithDeepLink(packageName: String, query: String): Boolean {
@@ -912,6 +916,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             val uri = when (packageName) {
                 "net.daum.android.map" -> android.net.Uri.parse("kakaomap://search?q=" + android.net.Uri.encode(query))
                 "com.nhn.android.nmap" -> android.net.Uri.parse("nmap://search?query=" + android.net.Uri.encode(query))
+                "com.skt.tmap.ku", "com.skt.tmap" -> android.net.Uri.parse("tmap://search?name=" + android.net.Uri.encode(query))
                 else -> null
             }
 
@@ -977,25 +982,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val isRouteCommand = routeKeywords.any { cleanCmd.endsWith(it) || cleanCmd.contains(it) }
         val isAppOpenCmd = cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || cleanCmd.contains("보여줘")
 
-        // [신규] LLM 기반 가이드 시작 — UI 변경 자동 감지 활성화
-        val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
-        startGuideFlow(command, currentPkg)
+        // [수정] 대화 중심 LLM 의도 분석을 위해 음성 인식 시점에 미리 startGuideFlow()를 실행하지 않음
+        // val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+        // startGuideFlow(command, currentPkg)
 
-        // 2. 하이브리드 모드: 정확한 NLP 파싱 및 딥링크 앱 실행 후 LLM 연속 루프에 제어권 이양
-        if (isRouteCommand && !isAppOpenCmd) {
-            val destination = cleanSearchQuery(command)
-            if (destination.isNotBlank()) {
-                val launchedPkg = openAppByName("지도", destination)
-                if (launchedPkg != null) {
-                    errorHandlingManager.onGuideStarted(launchedPkg, command)
-                    // 노란색 오버레이 하드코딩 매크로 대신, 깨끗한 LLM 연속 루프로 전환
-                    agentSessionManager.startSession(command)
-                } else {
-                    speakTts("${destination}을 검색할 수 있는 지도 앱이 없습니다.")
-                }
-                return true
-            }
-        }
+        // 2. [수정] 하드코딩된 로컬 지도 실행 차단 및 LLM 통신으로 위임
+        // if (isRouteCommand && !isAppOpenCmd) {
+        //     val destination = cleanSearchQuery(command)
+        //     if (destination.isNotBlank()) {
+        //         val launchedPkg = openAppByName("지도", destination)
+        //         if (launchedPkg != null) {
+        //             errorHandlingManager.onGuideStarted(launchedPkg, command)
+        //             agentSessionManager.startSession(command)
+        //         } else {
+        //             speakTts("${destination}을 검색할 수 있는 지도 앱이 없습니다.")
+        //         }
+        //         return true
+        //     }
+        // }
 
         // 3. Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
@@ -1020,7 +1024,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     fun captureScreenForLLM(userCommand: String) {
         removeTargetHighlight()
-        val screenSessionId = "screen_${System.currentTimeMillis()}"
+        val screenSessionId = agentSessionManager.sessionId ?: "screen_${System.currentTimeMillis()}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
                 override fun onSuccess(screenshotResult: ScreenshotResult) {
@@ -1078,6 +1082,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
                     contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
                     setBody(ScreenStateRequest(
                         userVoiceCommand = command,
                         uiTreeJson = uiTree,
@@ -1122,19 +1127,25 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             }
                             val launchedPkg = openAppByName(targetId, query)
                             if (launchedPkg != null) {
-                                errorHandlingManager.onGuideStarted(launchedPkg, command)
-                                // [신규] LLM 기반 가이드 시작
-                                startGuideFlow(command, launchedPkg)
+                                if (isMapPackage(launchedPkg)) {
+                                    Log.d(TAG, "지도/내비 앱 실행 후 가이드 세션 종료 및 가이드 정지")
+                                    agentSessionManager.endSession()
+                                    guideOrchestrator?.stopGuide()
+                                    removeTargetHighlight()
+                                } else {
+                                    errorHandlingManager.onGuideStarted(launchedPkg, command)
+                                    startGuideFlow(command, launchedPkg)
+                                }
                             }
                         }
-                    } else {
-                        // OPEN_APP이 아닐 때는 가이드 시작 전 현재 패키지를 타겟으로 설정
+                    } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {
                         val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                         if (currentPkg.isNotBlank()) {
                             errorHandlingManager.onGuideStarted(currentPkg, command)
-                            // [신규] LLM 기반 가이드 시작
                             startGuideFlow(command, currentPkg)
                         }
+                    } else {
+                        Log.d(TAG, "대화형 상태(ASK_USER 등) 또는 기타 상태 - guideOrchestrator 가이드 흐름을 시작하지 않습니다.")
                     }
                     if (response.actionType == "OPEN_APP") {
                         // OPEN_APP 처리는 이미 위에서 완료
