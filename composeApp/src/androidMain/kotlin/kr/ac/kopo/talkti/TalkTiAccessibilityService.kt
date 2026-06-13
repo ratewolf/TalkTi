@@ -1116,7 +1116,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                     val targetBounds = response.targetBounds
                     if (targetBounds != null) {
-                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor)
+                        val keepInfinite = (response.actionType == "GUIDE" || response.actionType == "ASK_USER")
+                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor, keepInfinite)
                     } else {
                         removeTargetHighlight()
                     }
@@ -1490,7 +1491,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return Json.encodeToString(elements)
     }
 
-    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
+    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED, keepInfinite: Boolean = false) {
         val optimizedBounds = findOptimizedBounds(bounds)
         Log.d(TAG, "showTargetHighlight: original=$bounds, optimized=$optimizedBounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -1533,9 +1534,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
             Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
         }
 
-        highlightJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(3000) // 3초간 유지 후 제거
-            removeTargetHighlight()
+        if (!keepInfinite) {
+            highlightJob = CoroutineScope(Dispatchers.Main).launch {
+                delay(3000) // 3초간 유지 후 제거
+                removeTargetHighlight()
+            }
         }
     }
 
