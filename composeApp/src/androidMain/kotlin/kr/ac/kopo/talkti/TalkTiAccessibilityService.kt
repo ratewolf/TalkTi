@@ -512,14 +512,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 가이드 정지/제거 처리
-        // (단, 클릭의 경우 가이드된 타겟 영역을 터치했을 때만 제거되도록 하고, 화면 전환 시에는 무조건 제거)
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName) {
-            removeTargetHighlight()
-            candidateOverlayManager?.clearOverlays()
-            actionButtonOverlayManager?.clearHighlight()
-            textToSpeech?.stop()
-        } else if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+        // [수정] 사용자가 가이드된 타겟 영역을 클릭(터치)했을 때만 오버레이 및 TTS 정지/제거 처리
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             val clickedNode = event.source
             if (clickedNode != null) {
                 val clickedRect = Rect()
