@@ -540,7 +540,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // ── 연속 가이드 티키타카 로직 ──
         // 화면에 변화가 생기거나 클릭이 일어났을 때, 세션이 진행 중이면 자동 캡처 후 서버 전송
-        if (agentSessionManager.isActive) {
+        // (단, 실시간 가이드 오케스트레이터가 활성화된 상태이면 실시간 guide 루프에서 알아서 처리하므로 이 무거운 루프는 비활성화함)
+        if (agentSessionManager.isActive && (guideOrchestrator == null || !guideOrchestrator!!.isActive)) {
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || 
                 event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
                 
@@ -967,10 +968,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
         uiChangeDetector?.reset()
         guideOrchestrator?.startGuide(command, packageName)
         
-        // 가이드 시작 즉시 첫 화면 강제 분석 보장
-        val initialUiTree = extractScreenTree()
-        Log.d(TAG, "[디버그] 가이드 시작 즉시 첫 화면 강제 분석을 시작합니다.")
-        guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
+        // 가이드 시작 후 앱이 로딩되고 화면이 완전히 그려질 시간을 확보하기 위해 약간 지연 후 분석 실행 (3초 지연 현상 방지)
+        guideScope.launch {
+            delay(1200) // 1.2초 대기하여 카카오맵 검색 결과 등이 뜰 때까지 대기
+            val initialUiTree = extractScreenTree()
+            Log.d(TAG, "[디버그] 가이드 시작 후 지연 분석을 실행합니다.")
+            guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
+        }
     }
 
     private fun processLocalCommand(command: String): Boolean {
