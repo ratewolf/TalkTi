@@ -54,6 +54,7 @@ import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
 import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
 import kr.ac.kopo.talkti.app.guide.AgentSessionManager
+import kr.ac.kopo.talkti.models.Candidate
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
@@ -1275,7 +1276,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         if (candidates.isEmpty()) {
 
-            speakTts("목적지를 찾을 수 없습니다.")
+            speakTts("더보기 버튼을 눌러주세요.")
 
             return
         }
@@ -1294,7 +1295,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             isAutoDestinationFlowActive = false
         }
 
-        speakTts("목적지를 선택해주세요.")
+        speakTts("원하는 항목을 선택해주세요.")
     }
     private fun showRouteSelectionOverlay() {
 
@@ -1311,14 +1312,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 ?: emptyList()
 
         if (routeCandidates.isEmpty()) {
-            speakTts("경로를 찾을 수 없습니다.")
+            speakTts("원하는 항목을 찾을 수 없습니다..")
             return
         }
 
-        candidateOverlayManager?.showCandidates(routeCandidates) {
-            speakTts(
-                "추천 경로로 가시려면 첫 번째 경로를 눌러주세요. 다른 경로를 원하시면 원하는 경로를 눌러주세요."
-            )
+        speakTts("원하는 항목을 선택해주세요.")
+
+        candidateOverlayManager?.showCandidates(routeCandidates) { selectedCandidate ->
+            // 아무것도 하지 않음
         }
     }
 
@@ -2141,4 +2142,48 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         return false
     }
+
+    // [NEW] 외부 또는 내부에서 후보 ID 목록을 받아 하이라이트하는 API
+    fun showCandidates(candidateIds: List<Int>, onCandidateSelected: ((kr.ac.kopo.talkti.models.Candidate) -> Unit)? = null) {
+        val uiTreeJson = extractScreenTree()
+        val elements = try {
+            Json.decodeFromString<List<UiElement>>(uiTreeJson)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val matchedElements = elements.filter { element ->
+            val idNum = element.candidateId.removePrefix("candidate_").toIntOrNull()
+            idNum != null && idNum in candidateIds
+        }
+        val candidates = matchedElements.map { element ->
+            Candidate(
+                id = element.candidateId,
+                text = element.text,
+                bounds = element.bounds
+            )
+        }
+        candidateOverlayManager?.showCandidates(candidates) { selected ->
+            onCandidateSelected?.invoke(selected)
+        }
+    }
+
+    // [NEW] 파라미터가 없는 showMultipleCandidates() 오버로드 API (추출된 후보들을 기본적으로 강조)
+    fun showMultipleCandidates(onCandidateSelected: ((kr.ac.kopo.talkti.models.Candidate) -> Unit)? = null) {
+        val uiTreeJson = extractScreenTree()
+        val elements = try {
+            Json.decodeFromString<List<UiElement>>(uiTreeJson)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val candidates = candidateExtractor.extractCandidates(elements)
+        candidateOverlayManager?.showCandidates(candidates) { selected ->
+            onCandidateSelected?.invoke(selected)
+        }
+    }
+
+    // [NEW] 하이라이트 좌표를 동적으로 업데이트하는 API
+    fun updateOverlayTargets(boundsList: List<RectDto>) {
+        candidateOverlayManager?.updateOverlayTargets(boundsList)
+    }
+
 }

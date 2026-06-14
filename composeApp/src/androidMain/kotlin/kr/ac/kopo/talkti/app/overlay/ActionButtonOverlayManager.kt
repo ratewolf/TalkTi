@@ -114,6 +114,8 @@ class ActionButtonOverlayManager(
 
         val badgeView = TextView(context).apply {
 
+            visibility = View.GONE
+
             text = badgeText
 
             setTextColor(Color.WHITE)
