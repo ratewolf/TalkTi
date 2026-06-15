@@ -13,6 +13,8 @@ import kr.ac.kopo.talkti.backend.service.AnalyzeService
 import kr.ac.kopo.talkti.backend.storage.FileStorage
 import kr.ac.kopo.talkti.backend.validator.RequestValidator
 import kr.ac.kopo.talkti.models.ScreenStateRequest
+import kr.ac.kopo.talkti.models.GuideScreenRequest
+import kr.ac.kopo.talkti.backend.service.GuideService
 
 val SERVER_PORT = 8080
 
@@ -30,6 +32,7 @@ fun Application.module() {
     }
 
     val analyzeService = AnalyzeService()
+    val guideService = GuideService()
     val fileStorage = FileStorage()
     val validator = RequestValidator()
 
@@ -56,6 +59,12 @@ fun Application.module() {
 
             // 분석 및 응답 (Backend Service 역할)
             val response = analyzeService.analyze(request)
+            call.respond(response)
+        }
+        post("/guide") {
+            val request = call.receive<GuideScreenRequest>()
+            println("Guide 요청 수신: cmd='${request.userCommand}', pkg='${request.packageName}', prevState='${request.previousState}'")
+            val response = guideService.analyze(request)
             call.respond(response)
         }
     }

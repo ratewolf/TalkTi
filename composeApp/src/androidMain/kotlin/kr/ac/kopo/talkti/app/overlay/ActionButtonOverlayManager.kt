@@ -78,7 +78,9 @@ class ActionButtonOverlayManager(
             (bounds.bottom - bounds.top)
                 .coerceAtLeast(dp(36))
 
-        val root = FrameLayout(context)
+        val root = FrameLayout(context).apply {
+            isFocusable = false
+        }
 
         // ────────────────────────────────────────────────
         // 2. 버튼 강조 테두리
@@ -158,6 +160,7 @@ class ActionButtonOverlayManager(
             buttonHeight + badgeHeightPx,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
