@@ -777,6 +777,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // 1. 패키지명으로 직접 실행 시도 (LLM이 패키지명을 보낸 경우)
         try {
+            val systemAndImePackages = setOf(
+                "android",
+                "com.android.systemui",
+                "com.google.android.inputmethod.latin",
+                "com.sec.android.inputmethod",
+                "com.samsung.android.honeyboard"
+            )
+            val isAlreadyRunning = windows?.any { 
+                val pkg = it.root?.packageName?.toString()
+                pkg == appNameOrPackage && pkg !in systemAndImePackages 
+            } ?: (rootInActiveWindow?.packageName?.toString() == appNameOrPackage)
+
+            if (isAlreadyRunning) {
+                Log.d(TAG, "앱이 이미 전면에 실행 중이거나 백그라운드 윈도우에 존재합니다: $appNameOrPackage")
+                return appNameOrPackage
+            }
+
             if (isMapPackage(appNameOrPackage) && !searchQuery.isNullOrBlank()) {
                 val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
                 if (launched) return appNameOrPackage
@@ -1065,8 +1082,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         val serverUrl = "$baseUrl/analyze"
         val installedApps = getInstalledApps()
+        val currentPackageName = getActiveAppPackageName()
 
-        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
+        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}, 현재앱: $currentPackageName")
 
         llmJob = CoroutineScope(Dispatchers.IO).launch {
             withContext(Dispatchers.Main) {
@@ -1083,7 +1101,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         uiTreeJson = uiTree,
                         screenshotBase64 = base64Image,
                         screenSessionId = screenSessionId,
-                        installedApps = installedApps
+                        installedApps = installedApps,
+                        currentPackageName = currentPackageName
                     ))
                 }.body()
 
@@ -1115,16 +1134,30 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
                         if (targetId != null) {
-                            val query = if (!response.actionArguments.isNullOrBlank()) {
-                                response.actionArguments
+                            val systemAndImePackages = setOf(
+                                "android",
+                                "com.android.systemui",
+                                "com.google.android.inputmethod.latin",
+                                "com.sec.android.inputmethod",
+                                "com.samsung.android.honeyboard"
+                            )
+                            val isAlreadyRunning = windows?.any { 
+                                val pkg = it.root?.packageName?.toString()
+                                pkg == targetId && pkg !in systemAndImePackages 
+                            } ?: (rootInActiveWindow?.packageName?.toString() == targetId)
+
+                            if (isAlreadyRunning) {
+                                Log.d(TAG, "앱이 이미 화면에 활성화되어 있으므로 OPEN_APP 재실행을 차단합니다: $targetId")
                             } else {
-                                cleanSearchQuery(command)
-                            }
-                            val launchedPkg = openAppByName(targetId, query)
-                            if (launchedPkg != null) {
-                                errorHandlingManager.onGuideStarted(launchedPkg, command)
-                                // [신규] LLM 기반 가이드 시작
-                                startGuideFlow(command, launchedPkg)
+                                val query = if (!response.actionArguments.isNullOrBlank()) {
+                                    response.actionArguments
+                                } else {
+                                    cleanSearchQuery(command)
+                                }
+                                val launchedPkg = openAppByName(targetId, query)
+                                if (launchedPkg != null) {
+                                    errorHandlingManager.onGuideStarted(launchedPkg, command)
+                                }
                             }
                         }
                     } else {
@@ -1478,6 +1511,28 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
 
         return Json.encodeToString(elements)
+    }
+
+    private fun getActiveAppPackageName(): String? {
+        val rootPkg = rootInActiveWindow?.packageName?.toString()
+        val systemAndImePackages = setOf(
+            "android",
+            "com.android.systemui",
+            "com.google.android.inputmethod.latin",
+            "com.sec.android.inputmethod",
+            "com.samsung.android.honeyboard"
+        )
+        if (rootPkg != null && rootPkg !in systemAndImePackages) {
+            return rootPkg
+        }
+        val activeWindows = windows ?: return rootPkg
+        for (window in activeWindows) {
+            val pkg = window.root?.packageName?.toString()
+            if (pkg != null && pkg !in systemAndImePackages) {
+                return pkg
+            }
+        }
+        return rootPkg
     }
 
     private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {

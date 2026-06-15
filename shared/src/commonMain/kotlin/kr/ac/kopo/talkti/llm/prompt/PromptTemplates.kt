@@ -78,6 +78,7 @@ object PromptTemplates {
         
         [핵심 규칙 - 반드시 순차적으로 1단계씩 소통하세요!]
         1. [앱 실행] 만약 사용자의 명령이 특정 앱을 실행해 달라는 의미라면, [스마트폰에 설치된 앱 리스트]에서 가장 적합한 packageName을 찾아 candidateId에 넣고 actionType을 OPEN_APP으로 설정하세요. 이때, 사용자가 가고자 하는 목적지 키워드(예: "삼성병원")를 정제하여 arguments에 포함하세요.
+           (단, 현재 화면에 실행 중인 앱 패키지명이 대상 앱의 packageName과 일치하는 경우에는 이미 앱이 열려 있으므로 절대 다시 OPEN_APP을 반환하지 마세요. 대신 바로 다음 가이드 단계인 CLICK 또는 ACTION_SET_TEXT 등의 인앱 동작을 수행하도록 지시해야 합니다.)
         2. [목적지 확인 소거법 질문] 앱에서 텍스트 입력(ACTION_SET_TEXT)으로 목적지를 검색한 직후라면, 화면에 '현 위치를 기준으로 한 목적지 검색 결과 리스트'가 나타납니다. 화면에 보이는 장소 목록 중 가장 맨 위에 있는 항목(또는 가장 정확도 높은 1개)만 먼저 어르신께 물어보세요. (actionType: ASK_USER)
         2. 만약 어르신이 "아니"라고 대답했다면, 방금 물어본 항목은 제외하고 그 다음 항목을 물어보세요 (소거법 방식).
         3. [오버레이 안내] 사용자가 특정 장소를 선택하거나 확정했다면, 반드시 지금 당장 눌러야 할 단 1개의 버튼에만 액션을 지시하세요 (actionType: CLICK).
@@ -122,11 +123,19 @@ object PromptTemplates {
         }
     """
 
-    fun buildScreenAnalyzePrompt(command: String, simplifiedNodesJson: String, installedAppsJson: String, personalizationInfo: String = ""): String {
+    fun buildScreenAnalyzePrompt(
+        command: String,
+        simplifiedNodesJson: String,
+        installedAppsJson: String,
+        currentPackageName: String? = null,
+        personalizationInfo: String = ""
+    ): String {
         val personalizationBlock = if (personalizationInfo.isNotBlank()) "$personalizationInfo\n" else ""
+        val activeAppBlock = if (!currentPackageName.isNullOrBlank()) "현재 화면에 실행 중인 앱 패키지명: \"$currentPackageName\"\n" else ""
         return """
             사용자 음성 명령: "$command"
             
+            $activeAppBlock
             현재 화면 UI 요소 리스트:
             $simplifiedNodesJson
             
@@ -135,6 +144,7 @@ object PromptTemplates {
             
             위 정보를 바탕으로 최적의 Guide Action을 결정해 주세요. 
             만약 사용자가 특정 앱을 열어달라고 하면 [설치된 앱 리스트]에서 가장 유사한 앱의 packageName을 찾아 candidateId로 반환하세요.
+            단, 현재 실행 중인 앱 패키지명(activeAppBlock)이 열고자 하는 대상 앱의 packageName과 일치하는 경우에는 다시 OPEN_APP을 반환하지 말고, 현재 화면의 UI 요소를 클릭(CLICK)하거나 입력(ACTION_SET_TEXT)하도록 안내하세요.
         """.trimIndent()
     }
 }
