@@ -158,11 +158,19 @@ object PromptTemplates {
         }
     """
 
-    fun buildScreenAnalyzePrompt(command: String, simplifiedNodesJson: String, installedAppsJson: String, personalizationInfo: String = ""): String {
+    fun buildScreenAnalyzePrompt(
+        command: String,
+        simplifiedNodesJson: String,
+        installedAppsJson: String,
+        currentPackageName: String? = null,
+        personalizationInfo: String = ""
+    ): String {
         val personalizationBlock = if (personalizationInfo.isNotBlank()) "$personalizationInfo\n" else ""
+        val activeAppBlock = if (!currentPackageName.isNullOrBlank()) "현재 화면에 실행 중인 앱 패키지명: \"$currentPackageName\"\n" else ""
         return """
             사용자 음성 명령: "$command"
             
+            $activeAppBlock
             현재 화면 UI 요소 리스트:
             $simplifiedNodesJson
             
@@ -171,6 +179,7 @@ object PromptTemplates {
             
             위 정보를 바탕으로 최적의 Guide Action을 결정해 주세요. 
             만약 사용자가 특정 앱을 열어달라고 하면 [설치된 앱 리스트]에서 가장 유사한 앱의 packageName을 찾아 candidateId로 반환하세요.
+            단, 현재 실행 중인 앱 패키지명(activeAppBlock)이 열고자 하는 대상 앱의 packageName과 일치하는 경우에는 다시 OPEN_APP을 반환하지 말고, 현재 화면의 UI 요소를 클릭(CLICK)하거나 입력(ACTION_SET_TEXT)하도록 안내하세요.
         """.trimIndent()
     }
 }
