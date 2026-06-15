@@ -13,21 +13,26 @@ class AgentSessionManager {
     var currentGoal: String? = null
         private set
 
+    var sessionId: String? = null
+        private set
+
     private var lastCapturedTime: Long = 0L
 
     fun startSession(goal: String) {
         isActive = true
         currentGoal = goal
+        sessionId = "session_${System.currentTimeMillis()}"
         lastCapturedTime = 0L // 첫 화면 전환 감지 시 딜레이 없이 즉시 캡처되도록 0으로 설정
-        Log.d(TAG, "세션 시작 - 목표: $goal")
+        Log.d(TAG, "세션 시작 - 목표: $goal, sessionId: $sessionId")
     }
 
     fun endSession() {
         if (isActive) {
-            Log.d(TAG, "세션 종료 - 기존 목표: $currentGoal")
+            Log.d(TAG, "세션 종료 - 기존 목표: $currentGoal, sessionId: $sessionId")
         }
         isActive = false
         currentGoal = null
+        sessionId = null
     }
 
     /**

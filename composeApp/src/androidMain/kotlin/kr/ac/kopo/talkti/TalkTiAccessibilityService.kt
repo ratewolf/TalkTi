@@ -53,13 +53,17 @@ import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
 import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
+import kr.ac.kopo.talkti.app.guide.GuideOrchestrator
+import kr.ac.kopo.talkti.app.guide.UiChangeDetector
+import kr.ac.kopo.talkti.models.GuideState
 import kr.ac.kopo.talkti.app.guide.AgentSessionManager
 import kr.ac.kopo.talkti.models.Candidate
 
 class TalkTiAccessibilityService : AccessibilityService() {
 
     companion object {
-        private var instance: TalkTiAccessibilityService? = null
+        var instance: TalkTiAccessibilityService? = null
+            private set
 
         fun setOverlayVisible(visible: Boolean) {
             instance?.let {
@@ -88,6 +92,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var actionButtonOverlayManager: ActionButtonOverlayManager? = null
     private var actionTargetFinder : ActionTargetFinder? = null
     private var routeCandidateFinder : RouteCandidateFinder? = null
+
+    // ── UI 변경 감지 기반 가이드 시스템 ──
+    private var guideOrchestrator: GuideOrchestrator? = null
+    private var uiChangeDetector: UiChangeDetector? = null
+    private val guideScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -150,12 +159,50 @@ class TalkTiAccessibilityService : AccessibilityService() {
         actionTargetFinder = ActionTargetFinder()
         routeCandidateFinder = RouteCandidateFinder()
 
+        // ── UI 변경 감지 기반 가이드 시스템 초기화 ──
+        guideOrchestrator = GuideOrchestrator(
+            client = client,
+            candidateOverlayManager = candidateOverlayManager!!,
+            actionButtonOverlayManager = actionButtonOverlayManager!!
+        )
+        guideOrchestrator?.setTts(textToSpeech)
+        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+        val savedUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
+        guideOrchestrator?.setServerUrl(savedUrl)
+
+        uiChangeDetector = UiChangeDetector()
+
+        // ── [신규] GuideOrchestrator 와 UiChangeDetector 의 분석 상태 연동 ──
+        guideOrchestrator?.onAnalyzeStateChanged = { analyzing ->
+            Log.d(TAG, "[디버그] GuideOrchestrator 분석 상태 변경 알림 -> UiChangeDetector.isAnalyzing = $analyzing")
+            uiChangeDetector?.isAnalyzing = analyzing
+        }
+
+        guideOrchestrator?.onStopGuide = {
+            Log.d(TAG, "[디버그] GuideOrchestrator.stopGuide() 감지 → uiChangeDetector.reset() 호출")
+            uiChangeDetector?.reset()
+        }
+
+        uiChangeDetector?.onMeaningfulChange = { uiTreeJson ->
+            removeTargetHighlight()
+            val orchestrator = guideOrchestrator
+            if (orchestrator != null && orchestrator.isActive) {
+                // 현재 패키지명 업데이트
+                val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                orchestrator.updatePackageName(currentPkg)
+                Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → GuideOrchestrator.onUiChanged 호출")
+                orchestrator.onUiChanged(uiTreeJson, guideScope)
+            }
+        }
+
         // 예외 처리 매니저 초기화
         errorHandlingManager.initialize(this, textToSpeech)
         errorHandlingManager.onTerminateListener = {
             // 가이드 종료 시 서비스 상태 초기화
             pendingCommand = null
             removeTargetHighlight()
+            guideOrchestrator?.stopGuide()
+            uiChangeDetector?.reset()
         }
 
         // 테스트를 위한 동적 브로드캐스트 리시버 등록
@@ -245,7 +292,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
                     if (!processLocalCommand(command)) {
-                        agentSessionManager.startSession(command)
+                        if (!agentSessionManager.isActive) {
+                            agentSessionManager.startSession(command)
+                        }
                         captureScreenForLLM(command)
                     }
                 }
@@ -279,7 +328,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             handleSelectionResponse(userCommand)
                         } else {
                             if (!processLocalCommand(userCommand)) {
-                                agentSessionManager.startSession(userCommand)
+                                if (!agentSessionManager.isActive) {
+                                    agentSessionManager.startSession(userCommand)
+                                }
                                 captureScreenForLLM(userCommand)
                             }
                         }
@@ -307,6 +358,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 textToSpeech?.setLanguage(java.util.Locale.KOREAN)
                 Log.d(TAG, "TTS 초기화 성공")
 
+                // [신규] GuideOrchestrator에도 TTS 전달
+                guideOrchestrator?.setTts(textToSpeech)
+
                 textToSpeech?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         Log.d(TAG, "TTS 시작: $utteranceId")
@@ -321,9 +375,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 startAppGuide()
                             }
                         }
+                        // [신규] 완료 안내 TTS가 끝났을 때 stopGuide() 실제 정리 호출
+                        if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                Log.d(TAG, "[디버그] 완료 안내 TTS 종료 확인 → stopGuide() 호출")
+                                guideOrchestrator?.stopGuide()
+                            }
+                        }
                     }
                     override fun onError(utteranceId: String?) {
                         Log.e(TAG, "TTS 에러: $utteranceId")
+                        // [신규] 완료 안내 TTS 도중 에러가 나도 강제 stopGuide() 처리하여 교착 방지
+                        if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                Log.e(TAG, "[디버그] 완료 안내 TTS 에러 발생 → stopGuide() 강제 호출")
+                                guideOrchestrator?.stopGuide()
+                            }
+                        }
                     }
                 })
             } else {
@@ -445,16 +513,36 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        // [수정] 사용자가 요소를 클릭하거나 화면 전환(Activity/Dialog 변경 등)이 발생했을 때 활성화된 가이드 하이라이트 오버레이 제거
-        // (단, 우리 앱 자체의 오버레이 창이 추가되면서 생기는 WINDOW_STATE_CHANGED 이벤트는 무시)
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
-            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.packageName != packageName)) {
-            removeTargetHighlight()
+        // [수정] 사용자가 가이드된 타겟 영역을 클릭(터치)했을 때만 오버레이 및 TTS 정지/제거 처리
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            val clickedNode = event.source
+            if (clickedNode != null) {
+                val clickedRect = Rect()
+                clickedNode.getBoundsInScreen(clickedRect)
+                
+                val orchestrator = guideOrchestrator
+                val shouldClear = if (orchestrator != null && orchestrator.isActive) {
+                    orchestrator.isClickInsideTargets(clickedRect)
+                } else {
+                    true // 가이드 모드가 아닐 때는 즉시 제거
+                }
+                
+                if (shouldClear) {
+                    Log.d(TAG, "🎯 [타겟 영역 클릭 감지] 오버레이 및 TTS 즉시 정리")
+                    removeTargetHighlight()
+                    candidateOverlayManager?.clearOverlays()
+                    actionButtonOverlayManager?.clearHighlight()
+                    textToSpeech?.stop()
+                } else {
+                    Log.d(TAG, "⚠️ [타겟 외 영역 클릭 감지] 오버레이 유지")
+                }
+            }
         }
 
         // ── 연속 가이드 티키타카 로직 ──
         // 화면에 변화가 생기거나 클릭이 일어났을 때, 세션이 진행 중이면 자동 캡처 후 서버 전송
-        if (agentSessionManager.isActive) {
+        // (단, 실시간 가이드 오케스트레이터가 활성화된 상태이면 실시간 guide 루프에서 알아서 처리하므로 이 무거운 루프는 비활성화함)
+        if (agentSessionManager.isActive && (guideOrchestrator == null || !guideOrchestrator!!.isActive)) {
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || 
                 event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
                 
@@ -639,7 +727,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
+            // ── [신규] UI 변경 감지 기반 가이드 (LLM 우선) ──
+            val orchestrator = guideOrchestrator
+            if (orchestrator != null && orchestrator.isActive) {
+                val uiTreeJsonForGuide = extractScreenTree()
+                Log.d(TAG, "[디버그] 접근성 변경 이벤트 감지 → UiChangeDetector.onNewUiTree 전달")
+                uiChangeDetector?.onNewUiTree(uiTreeJsonForGuide, guideScope)
+            }
 
+            // ── [기존 Fallback] GuideStep 기반 로직 (else if 체인으로 연쇄 전이 방지) ──
             if (currentGuideStep == GuideStep.PLACE_SELECTION) {
 
                 val uiTreeJson = extractScreenTree()
@@ -665,17 +761,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     currentGuideStep =
                         GuideStep.DESTINATION_BUTTON
                 }
-            }
-
-            if (currentGuideStep == GuideStep.DESTINATION_BUTTON) {
+            } else if (currentGuideStep == GuideStep.DESTINATION_BUTTON) {
 
                 showRouteSelectionOverlay()
 
                 currentGuideStep =
                     GuideStep.ROUTE_SELECTION
-            }
-
-            if (currentGuideStep == GuideStep.ROUTE_SELECTION) {
+            } else if (currentGuideStep == GuideStep.ROUTE_SELECTION) {
 
                 val uiTreeJson = extractScreenTree()
 
@@ -712,6 +804,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // 1. 패키지명으로 직접 실행 시도 (LLM이 패키지명을 보낸 경우)
         try {
+            val systemAndImePackages = setOf(
+                "android",
+                "com.android.systemui",
+                "com.google.android.inputmethod.latin",
+                "com.sec.android.inputmethod",
+                "com.samsung.android.honeyboard"
+            )
+            val isAlreadyRunning = windows?.any { 
+                val pkg = it.root?.packageName?.toString()
+                pkg == appNameOrPackage && pkg !in systemAndImePackages 
+            } ?: (rootInActiveWindow?.packageName?.toString() == appNameOrPackage)
+
+            if (isAlreadyRunning) {
+                Log.d(TAG, "앱이 이미 전면에 실행 중이거나 백그라운드 윈도우에 존재합니다: $appNameOrPackage")
+                return appNameOrPackage
+            }
+
             if (isMapPackage(appNameOrPackage) && !searchQuery.isNullOrBlank()) {
                 val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
                 if (launched) return appNameOrPackage
@@ -741,8 +850,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             //지도
             "지도" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
             "길찾기" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
-            "네비" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
-            "내비게이션" to listOf("net.daum.android.map", "com.nhn.android.nmap"),
+            "네비" to listOf("com.skt.tmap.ku", "com.skt.tmap", "net.daum.android.map", "com.nhn.android.nmap"),
+            "내비게이션" to listOf("com.skt.tmap.ku", "com.skt.tmap", "net.daum.android.map", "com.nhn.android.nmap"),
+            "티맵" to listOf("com.skt.tmap.ku", "com.skt.tmap"),
             "카카오맵" to listOf("net.daum.android.map"),
             "카카오지도" to listOf("net.daum.android.map"),
             "네이버지도" to listOf("com.nhn.android.nmap"),
@@ -839,7 +949,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun isMapPackage(packageName: String): Boolean {
-        return packageName == "net.daum.android.map" || packageName == "com.nhn.android.nmap"
+        return packageName == "net.daum.android.map" || 
+               packageName == "com.nhn.android.nmap" || 
+               packageName == "com.skt.tmap.ku" || 
+               packageName == "com.skt.tmap"
     }
 
     private fun launchMapWithDeepLink(packageName: String, query: String): Boolean {
@@ -847,6 +960,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             val uri = when (packageName) {
                 "net.daum.android.map" -> android.net.Uri.parse("kakaomap://search?q=" + android.net.Uri.encode(query))
                 "com.nhn.android.nmap" -> android.net.Uri.parse("nmap://search?query=" + android.net.Uri.encode(query))
+                "com.skt.tmap.ku", "com.skt.tmap" -> android.net.Uri.parse("tmap://search?name=" + android.net.Uri.encode(query))
                 else -> null
             }
 
@@ -865,6 +979,19 @@ class TalkTiAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "딥링크 실행 실패: ${e.message}")
             false
+        }
+    }
+
+    private fun startGuideFlow(command: String, packageName: String) {
+        uiChangeDetector?.reset()
+        guideOrchestrator?.startGuide(command, packageName)
+        
+        // 가이드 시작 후 앱이 로딩되고 화면이 완전히 그려질 시간을 확보하기 위해 약간 지연 후 분석 실행 (3초 지연 현상 방지)
+        guideScope.launch {
+            delay(1200) // 1.2초 대기하여 카카오맵 검색 결과 등이 뜰 때까지 대기
+            val initialUiTree = extractScreenTree()
+            Log.d(TAG, "[디버그] 가이드 시작 후 지연 분석을 실행합니다.")
+            guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
         }
     }
 
@@ -902,21 +1029,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val isRouteCommand = routeKeywords.any { cleanCmd.endsWith(it) || cleanCmd.contains(it) }
         val isAppOpenCmd = cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || cleanCmd.contains("보여줘")
 
-        // 2. 하이브리드 모드: 정확한 NLP 파싱 및 딥링크 앱 실행 후 LLM 연속 루프에 제어권 이양
-        if (isRouteCommand && !isAppOpenCmd) {
-            val destination = cleanSearchQuery(command)
-            if (destination.isNotBlank()) {
-                val launchedPkg = openAppByName("지도", destination)
-                if (launchedPkg != null) {
-                    errorHandlingManager.onGuideStarted(launchedPkg, command)
-                    // 노란색 오버레이 하드코딩 매크로 대신, 깨끗한 LLM 연속 루프로 전환
-                    agentSessionManager.startSession(command)
-                } else {
-                    speakTts("${destination}을 검색할 수 있는 지도 앱이 없습니다.")
-                }
-                return true
-            }
-        }
+        // [수정] 대화 중심 LLM 의도 분석을 위해 음성 인식 시점에 미리 startGuideFlow()를 실행하지 않음
+        // val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+        // startGuideFlow(command, currentPkg)
+
+        // 2. [수정] 하드코딩된 로컬 지도 실행 차단 및 LLM 통신으로 위임
+        // if (isRouteCommand && !isAppOpenCmd) {
+        //     val destination = cleanSearchQuery(command)
+        //     if (destination.isNotBlank()) {
+        //         val launchedPkg = openAppByName("지도", destination)
+        //         if (launchedPkg != null) {
+        //             errorHandlingManager.onGuideStarted(launchedPkg, command)
+        //             agentSessionManager.startSession(command)
+        //         } else {
+        //             speakTts("${destination}을 검색할 수 있는 지도 앱이 없습니다.")
+        //         }
+        //         return true
+        //     }
+        // }
 
         // 3. Selection 흐름 실제 시작 연결 (기존 흐름 유지, LLM 전송 회피)
         if (cleanCmd.contains("선택시작") || cleanCmd.contains("후보선택") || cleanCmd.contains("목록읽어줘")) {
@@ -941,7 +1071,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     fun captureScreenForLLM(userCommand: String) {
         removeTargetHighlight()
-        val screenSessionId = "screen_${System.currentTimeMillis()}"
+        val screenSessionId = agentSessionManager.sessionId ?: "screen_${System.currentTimeMillis()}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
                 override fun onSuccess(screenshotResult: ScreenshotResult) {
@@ -986,8 +1116,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         val serverUrl = "$baseUrl/analyze"
         val installedApps = getInstalledApps()
+        val currentPackageName = getActiveAppPackageName()
 
-        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
+        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}, 현재앱: $currentPackageName")
 
         llmJob = CoroutineScope(Dispatchers.IO).launch {
             withContext(Dispatchers.Main) {
@@ -999,12 +1130,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
                     contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
                     setBody(ScreenStateRequest(
                         userVoiceCommand = command,
                         uiTreeJson = uiTree,
                         screenshotBase64 = base64Image,
                         screenSessionId = screenSessionId,
-                        installedApps = installedApps
+                        installedApps = installedApps,
+                        currentPackageName = currentPackageName
                     ))
                 }.body()
 
@@ -1027,7 +1160,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                     val targetBounds = response.targetBounds
                     if (targetBounds != null) {
-                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor)
+                        val keepInfinite = (response.actionType == "GUIDE" || response.actionType == "ASK_USER")
+                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor, keepInfinite)
                     } else {
                         removeTargetHighlight()
                     }
@@ -1036,22 +1170,43 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
                         if (targetId != null) {
-                            val query = if (!response.actionArguments.isNullOrBlank()) {
-                                response.actionArguments
+                            val systemAndImePackages = setOf(
+                                "android",
+                                "com.android.systemui",
+                                "com.google.android.inputmethod.latin",
+                                "com.sec.android.inputmethod",
+                                "com.samsung.android.honeyboard"
+                            )
+                            val isAlreadyRunning = windows?.any { 
+                                val pkg = it.root?.packageName?.toString()
+                                pkg == targetId && pkg !in systemAndImePackages 
+                            } ?: (rootInActiveWindow?.packageName?.toString() == targetId)
+
+                            if (isAlreadyRunning) {
+                                Log.d(TAG, "앱이 이미 화면에 활성화되어 있으므로 OPEN_APP 재실행을 차단합니다: $targetId")
                             } else {
-                                cleanSearchQuery(command)
-                            }
-                            val launchedPkg = openAppByName(targetId, query)
-                            if (launchedPkg != null) {
-                                errorHandlingManager.onGuideStarted(launchedPkg, command)
+                                val query = if (!response.actionArguments.isNullOrBlank()) {
+                                    response.actionArguments
+                                } else {
+                                    cleanSearchQuery(command)
+                                }
+                                val launchedPkg = openAppByName(targetId, query)
+                                if (launchedPkg != null) {
+                                    val finalGoal = agentSessionManager.currentGoal ?: command
+                                    errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
+                                    startGuideFlow(finalGoal, launchedPkg)
+                                }
                             }
                         }
-                    } else {
-                        // OPEN_APP이 아닐 때는 가이드 시작 전 현재 패키지를 타겟으로 설정
+                    } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {
                         val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                         if (currentPkg.isNotBlank()) {
-                            errorHandlingManager.onGuideStarted(currentPkg, command)
+                            val finalGoal = agentSessionManager.currentGoal ?: command
+                            errorHandlingManager.onGuideStarted(currentPkg, finalGoal)
+                            startGuideFlow(finalGoal, currentPkg)
                         }
+                    } else {
+                        Log.d(TAG, "대화형 상태(ASK_USER 등) 또는 기타 상태 - guideOrchestrator 가이드 흐름을 시작하지 않습니다.")
                     }
                     if (response.actionType == "OPEN_APP") {
                         // OPEN_APP 처리는 이미 위에서 완료
@@ -1327,6 +1482,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        // [신규] 가이드 시스템 정리
+        guideOrchestrator?.destroy()
+        uiChangeDetector?.destroy()
+        guideScope.cancel()
         testReceiver?.let {
             try {
                 unregisterReceiver(it)
@@ -1393,7 +1552,29 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return Json.encodeToString(elements)
     }
 
-    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED) {
+    private fun getActiveAppPackageName(): String? {
+        val rootPkg = rootInActiveWindow?.packageName?.toString()
+        val systemAndImePackages = setOf(
+            "android",
+            "com.android.systemui",
+            "com.google.android.inputmethod.latin",
+            "com.sec.android.inputmethod",
+            "com.samsung.android.honeyboard"
+        )
+        if (rootPkg != null && rootPkg !in systemAndImePackages) {
+            return rootPkg
+        }
+        val activeWindows = windows ?: return rootPkg
+        for (window in activeWindows) {
+            val pkg = window.root?.packageName?.toString()
+            if (pkg != null && pkg !in systemAndImePackages) {
+                return pkg
+            }
+        }
+        return rootPkg
+    }
+
+    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED, keepInfinite: Boolean = false) {
         val optimizedBounds = findOptimizedBounds(bounds)
         Log.d(TAG, "showTargetHighlight: original=$bounds, optimized=$optimizedBounds, color=$color")
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -1436,9 +1617,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
             Log.e(TAG, "Highlight View 추가 실패: ${e.message}")
         }
 
-        highlightJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(3000) // 3초간 유지 후 제거
-            removeTargetHighlight()
+        if (!keepInfinite) {
+            highlightJob = CoroutineScope(Dispatchers.Main).launch {
+                delay(3000) // 3초간 유지 후 제거
+                removeTargetHighlight()
+            }
         }
     }
 
@@ -1451,7 +1634,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun findOptimizedBounds(bounds: RectDto): RectDto {
+    fun findOptimizedBounds(bounds: RectDto): RectDto {
         val activeWindows = windows ?: emptyList()
         var foundNode: AccessibilityNodeInfo? = null
         

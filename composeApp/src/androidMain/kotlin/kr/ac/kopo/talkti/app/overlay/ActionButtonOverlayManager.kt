@@ -68,7 +68,6 @@ class ActionButtonOverlayManager(
         // 1. 루트 컨테이너
         // ────────────────────────────────────────────────
 
-        val badgeHeightPx = dp(36)
 
         val buttonWidth =
             (bounds.right - bounds.left)
@@ -78,7 +77,9 @@ class ActionButtonOverlayManager(
             (bounds.bottom - bounds.top)
                 .coerceAtLeast(dp(36))
 
-        val root = FrameLayout(context)
+        val root = FrameLayout(context).apply {
+            isFocusable = false
+        }
 
         // ────────────────────────────────────────────────
         // 2. 버튼 강조 테두리
@@ -92,7 +93,7 @@ class ActionButtonOverlayManager(
             buttonWidth,
             buttonHeight
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
         }
 
         root.addView(
@@ -152,14 +153,15 @@ class ActionButtonOverlayManager(
         )
 
         // ────────────────────────────────────────────────
-        // 4. WindowManager.LayoutParams
+        // 4. WindowManager.LayoutParams (터치 관통을 위해 FLAG_NOT_TOUCHABLE 설정)
         // ────────────────────────────────────────────────
 
         val params = WindowManager.LayoutParams(
             buttonWidth,
-            buttonHeight + badgeHeightPx,
+            buttonHeight,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -168,7 +170,7 @@ class ActionButtonOverlayManager(
             gravity = Gravity.TOP or Gravity.START
 
             x = bounds.left
-            y = bounds.top - badgeHeightPx
+            y = bounds.top
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode =
@@ -191,7 +193,7 @@ class ActionButtonOverlayManager(
 
             Log.d(
                 "ActionButtonOverlay",
-                "오버레이 추가 성공: $badgeText"
+                "오버레이 추가 성공: label=$label"
             )
 
         } catch (e: Exception) {
