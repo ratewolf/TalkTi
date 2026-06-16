@@ -62,7 +62,6 @@ class CandidateOverlayManager(
         val maxRight = validCandidates.maxOf { it.bounds.right }
         val maxBottom = validCandidates.maxOf { it.bounds.bottom }
 
-        val badgeHeightPx = dp(36)
 
         val containerWidth = (maxRight - minLeft).coerceAtLeast(dp(60))
         val containerHeight = (maxBottom - minTop).coerceAtLeast(dp(36))
@@ -88,47 +87,17 @@ class CandidateOverlayManager(
             containerWidth,
             containerHeight
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
         }
 
         root.addView(borderView, borderParams)
-
-        // ────────────────────────────────────────────────
-        // 2. 상단 안내 배지
-        // ────────────────────────────────────────────────
-        val badgeView = TextView(context).apply {
-            text = "원하는 항목을 선택하세요"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            val padH = dp(12)
-            val padV = dp(6)
-            setPadding(padH, padV, padH, padV)
-
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                setColor(Color.parseColor("#FF3B30")) // 빨간색 채우기
-                setStroke(dp(1), Color.BLACK) // 검은색 얇은 테두리
-                cornerRadius = dp(6).toFloat()
-            }
-        }
-
-        val badgeParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            badgeHeightPx
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        }
-
-        root.addView(badgeView, badgeParams)
 
         // ────────────────────────────────────────────────
         // 3. WindowManager 레이아웃 파라미터 (FLAG_NOT_TOUCHABLE 설정)
         // ────────────────────────────────────────────────
         val params = WindowManager.LayoutParams(
             containerWidth,
-            containerHeight + badgeHeightPx,
+            containerHeight,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -140,7 +109,7 @@ class CandidateOverlayManager(
             gravity = Gravity.TOP or Gravity.START
 
             x = minLeft
-            y = (minTop - badgeHeightPx).coerceAtLeast(0)
+            y = minTop
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode =

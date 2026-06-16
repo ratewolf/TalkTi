@@ -7,9 +7,11 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.request.header
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.coroutines.*
+import kr.ac.kopo.talkti.TalkTiAccessibilityService
 import kr.ac.kopo.talkti.models.*
 import kr.ac.kopo.talkti.app.overlay.CandidateOverlayManager
 import kr.ac.kopo.talkti.app.overlay.ActionButtonOverlayManager
@@ -178,6 +180,7 @@ class GuideOrchestrator(
 
                 val response: GuideScreenResponse = client.post(guideUrl) {
                     contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
                     setBody(request)
                 }.body()
 
@@ -225,26 +228,41 @@ class GuideOrchestrator(
             return
         }
 
-        // 같은 상태인데 타겟도 같으면 스킵
-        if (newState == currentState && response.targets == currentTargets) {
-            Log.d(TAG, "[디버그] 동일 가이드 상태 및 동일 타겟 목록 감지 — 오버레이 및 TTS 스킵")
+        // 타겟 좌표 최적화 적용 (실제 클릭 가능한 컨테이너 영역으로 매핑)
+        val optimizedTargets = response.targets.map { target ->
+            val optBounds = TalkTiAccessibilityService.instance?.findOptimizedBounds(target.bounds) ?: target.bounds
+            GuideTarget(
+                candidateId = target.candidateId,
+                text = target.text,
+                bounds = optBounds
+            )
+        }
+
+        // 동일 상태 및 동일 타겟(ID 또는 텍스트 기준) 판단
+        val isSameStateAndTargets = newState == currentState && 
+            (optimizedTargets.map { it.candidateId } == currentTargets.map { it.candidateId } ||
+             optimizedTargets.map { it.text } == currentTargets.map { it.text })
+
+        // 꿀틀거림 방지: 좌표까지 완전 일치한다면 오버레이 재생성 및 TTS 모두 스킵하여 화면 깜빡임 차단
+        if (newState == currentState && optimizedTargets == currentTargets) {
+            Log.d(TAG, "[디버그] 동일 가이드 상태 및 완전히 동일한 좌표 감지 — 업데이트 건너뜀")
             return
         }
 
-        Log.d(TAG, "[디버그] 가이드 상태 전이: $currentState → $newState, 타겟 개수: ${response.targets.size}")
+        Log.d(TAG, "[디버그] 가이드 상태 전이: $currentState → $newState, 타겟 개수: ${optimizedTargets.size}")
         currentState = newState
-        currentTargets = response.targets
+        currentTargets = optimizedTargets
 
-        // 기존 오버레이 정리
+        // 기존 오버레이 정리 및 재배치 (좌표가 변경되었을 수 있으므로 항상 실행)
         candidateOverlayManager.clearOverlays()
         actionButtonOverlayManager.clearHighlight()
 
         when (newState) {
             GuideState.SELECT_TARGET, GuideState.SELECT_OPTION -> {
-                showCandidateOverlays(response.targets)
+                showCandidateOverlays(optimizedTargets)
             }
             GuideState.PRESS_ACTION, GuideState.CONFIRM -> {
-                showActionOverlay(response.targets)
+                showActionOverlay(optimizedTargets)
             }
             GuideState.COMPLETE -> {
                 candidateOverlayManager.clearOverlays()
@@ -264,9 +282,13 @@ class GuideOrchestrator(
             }
         }
 
-        // TTS 안내
+        // TTS 안내 (동일 타겟/상태면 스킵하여 안내 중복 방지)
         if (response.tts.isNotBlank()) {
-            speakTts(response.tts)
+            if (isSameStateAndTargets) {
+                Log.d(TAG, "[디버그] 동일 상태 및 동일 타겟 감지 -> TTS 재생 스킵 (중복 낭독 방지)")
+            } else {
+                speakTts(response.tts)
+            }
         }
     }
 
@@ -380,7 +402,7 @@ class GuideOrchestrator(
                 Candidate(
                     id = t.candidateId,
                     text = t.text,
-                    bounds = t.bounds
+                    bounds = b
                 )
             }
         }
@@ -407,9 +429,9 @@ class GuideOrchestrator(
             return
         }
 
-        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, bounds=${first.bounds}")
+        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, bounds=$b")
         actionButtonOverlayManager.showActionButtonHighlight(
-            first.bounds,
+            b,
             first.text
         )
     }
@@ -422,6 +444,22 @@ class GuideOrchestrator(
         val params = Bundle()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "guide_orchestrator_tts")
         textToSpeech?.speak(message, TextToSpeech.QUEUE_FLUSH, params, "guide_orchestrator_tts")
+    }
+
+    /**
+     * 특정 클릭 이벤트의 좌표가 현재 가이드 타겟 영역 내에 포함되거나 겹치는지 검사한다.
+     */
+    fun isClickInsideTargets(clickedBounds: android.graphics.Rect): Boolean {
+        if (currentTargets.isEmpty()) return false
+        for (target in currentTargets) {
+            val b = target.bounds
+            val overlap = clickedBounds.left < b.right && clickedBounds.right > b.left &&
+                          clickedBounds.top < b.bottom && clickedBounds.bottom > b.top
+            if (overlap) {
+                return true
+            }
+        }
+        return false
     }
 
     /**

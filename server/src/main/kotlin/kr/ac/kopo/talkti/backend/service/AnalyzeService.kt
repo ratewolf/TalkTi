@@ -37,8 +37,27 @@ class AnalyzeService(
         val actionType: String,
         val arguments: String? = null,
         val ttsMessage: String,
-        val confidence: Double = 0.0
+        val confidence: Double = 0.0,
+        val thought: String = ""
     )
+
+    private val sessionHistories = java.util.concurrent.ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
+
+    private fun getSessionHistoryText(sessionId: String): String {
+        val history = sessionHistories[sessionId] ?: return "이전 대화 없음"
+        if (history.isEmpty()) return "이전 대화 없음"
+        return history.joinToString("\n") { (user, assistant) ->
+            "사용자: $user\n똑띠: $assistant"
+        }
+    }
+
+    private fun addMessageToHistory(sessionId: String, user: String, assistant: String) {
+        val list = sessionHistories.computeIfAbsent(sessionId) { java.util.concurrent.CopyOnWriteArrayList() }
+        list.add(Pair(user, assistant))
+        if (list.size > 5) {
+            list.removeAt(0)
+        }
+    }
 
     fun analyze(request: ScreenStateRequest): GuideActionResponse {
         val candidates = extractCandidates(request.uiTreeJson)
@@ -50,9 +69,15 @@ class AnalyzeService(
         val simplifiedJson = Json.encodeToString(simplifiedElements)
         val installedAppsJson = Json.encodeToString(request.installedApps ?: emptyList<AppInfo>())
 
+        val sessionId = request.screenSessionId ?: "default_session"
+        val historyText = getSessionHistoryText(sessionId)
+
         // 2. 프롬프트 생성 및 LLM 호출
         val combinedPrompt = """
             ${PromptTemplates.SCREEN_ANALYZE_SYSTEM_PROMPT}
+            
+            [대화 이력]
+            $historyText
             
             ${PromptTemplates.buildScreenAnalyzePrompt(request.userVoiceCommand, simplifiedJson, installedAppsJson)}
         """.trimIndent()
@@ -72,7 +97,11 @@ class AnalyzeService(
                 }
 
                 val llmRes = json.decodeFromString(LlmResponse.serializer(), cleanJson)
+                println("🧠 LLM Thought (Sub-goal): ${llmRes.thought}")
                 println("✅ LLM 분석 성공: ${llmRes.ttsMessage} (Target: ${llmRes.candidateId})")
+
+                // 대화 이력 기록
+                addMessageToHistory(sessionId, request.userVoiceCommand, llmRes.ttsMessage)
 
                 // LLM이 선택한 candidateId에 해당하는 좌표 찾기
                 val targetCandidate = candidates.find { it.candidateId == llmRes.candidateId }
