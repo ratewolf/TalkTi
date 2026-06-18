@@ -169,12 +169,29 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val savedUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
         guideOrchestrator?.setServerUrl(savedUrl)
 
-        uiChangeDetector = UiChangeDetector()
+        uiChangeDetector = UiChangeDetector().apply {
+            onUiChangeDetected = {
+                Log.d(TAG, "[디버그] UI 변경 감지 시작 -> 기존 오버레이 제거 및 활성 분석 즉시 취소")
+                candidateOverlayManager?.clearOverlays()
+                actionButtonOverlayManager?.clearHighlight()
+                guideOrchestrator?.cancelActiveAnalysis()
+            }
+        }
 
         // ── [신규] GuideOrchestrator 와 UiChangeDetector 의 분석 상태 연동 ──
         guideOrchestrator?.onAnalyzeStateChanged = { analyzing ->
             Log.d(TAG, "[디버그] GuideOrchestrator 분석 상태 변경 알림 -> UiChangeDetector.isAnalyzing = $analyzing")
             uiChangeDetector?.isAnalyzing = analyzing
+            
+            // 분석 상태에 따라 LlmLoadingOverlay 연동
+            CoroutineScope(Dispatchers.Main).launch {
+                if (analyzing) {
+                    LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+                    speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.", "talkti_tts")
+                } else {
+                    LlmLoadingOverlay.hide()
+                }
+            }
         }
 
         guideOrchestrator?.onStopGuide = {
@@ -400,6 +417,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // 똑띠 앱 자체의 이벤트는 분석 루프 및 접근성 안내에서 제외하여 무한 생각중 루프 방지
+        if (event.packageName?.toString() == "kr.ac.kopo.talkti") {
+            return
+        }
+
         // ── 예외 처리 인터셉터: 팝업/이탈/타이머 검사를 기존 로직보다 먼저 수행 ──
         if (errorHandlingManager.interceptEvent(event)) return
 
@@ -521,7 +543,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 
                 val orchestrator = guideOrchestrator
                 val shouldClear = if (orchestrator != null && orchestrator.isActive) {
-                    orchestrator.isClickInsideTargets(clickedRect)
+                    // 개별 타겟 내 클릭이거나 전체 후보 오버레이 영역 내 클릭인 경우 즉시 정리
+                    orchestrator.isClickInsideTargets(clickedRect) || orchestrator.isClickInsideOverlayArea(clickedRect)
                 } else {
                     true // 가이드 모드가 아닐 때는 즉시 제거
                 }
@@ -726,12 +749,25 @@ class TalkTiAccessibilityService : AccessibilityService() {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
+            // 포그라운드 패키지가 변경되었는지 감지하기 위해 즉시 패키지명 업데이트 시도
+            val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+            if (currentPkg.isNotBlank()) {
+                guideOrchestrator?.updatePackageName(currentPkg)
+            }
+
             // ── [신규] UI 변경 감지 기반 가이드 (LLM 우선) ──
             val orchestrator = guideOrchestrator
             if (orchestrator != null && orchestrator.isActive) {
                 val uiTreeJsonForGuide = extractScreenTree()
-                Log.d(TAG, "[디버그] 접근성 변경 이벤트 감지 → UiChangeDetector.onNewUiTree 전달")
-                uiChangeDetector?.onNewUiTree(uiTreeJsonForGuide, guideScope)
+                val isWindowStateChanged = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                Log.d(TAG, "[디버그] 접근성 변경 이벤트 감지 (이벤트타입=${event.eventType}, 윈도우 전환=$isWindowStateChanged) → UiChangeDetector.onNewUiTree 전달")
+                uiChangeDetector?.onNewUiTree(
+                    uiTreeJson = uiTreeJsonForGuide,
+                    scope = guideScope,
+                    eventType = event.eventType,
+                    screenHeight = resources.displayMetrics.heightPixels,
+                    immediate = isWindowStateChanged
+                )
             }
 
             // ── [기존 Fallback] GuideStep 기반 로직 (else if 체인으로 연쇄 전이 방지) ──
@@ -803,23 +839,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // 1. 패키지명으로 직접 실행 시도 (LLM이 패키지명을 보낸 경우)
         try {
-            val systemAndImePackages = setOf(
-                "android",
-                "com.android.systemui",
-                "com.google.android.inputmethod.latin",
-                "com.sec.android.inputmethod",
-                "com.samsung.android.honeyboard"
-            )
-            val isAlreadyRunning = windows?.any { 
-                val pkg = it.root?.packageName?.toString()
-                pkg == appNameOrPackage && pkg !in systemAndImePackages 
-            } ?: (rootInActiveWindow?.packageName?.toString() == appNameOrPackage)
-
-            if (isAlreadyRunning) {
-                Log.d(TAG, "앱이 이미 전면에 실행 중이거나 백그라운드 윈도우에 존재합니다: $appNameOrPackage")
-                return appNameOrPackage
-            }
-
             if (isMapPackage(appNameOrPackage) && !searchQuery.isNullOrBlank()) {
                 val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
                 if (launched) return appNameOrPackage
@@ -1115,9 +1134,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         val serverUrl = "$baseUrl/analyze"
         val installedApps = getInstalledApps()
-        val currentPackageName = getActiveAppPackageName()
 
-        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}, 현재앱: $currentPackageName")
+        Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
 
         llmJob = CoroutineScope(Dispatchers.IO).launch {
             withContext(Dispatchers.Main) {
@@ -1135,8 +1153,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         uiTreeJson = uiTree,
                         screenshotBase64 = base64Image,
                         screenSessionId = screenSessionId,
-                        installedApps = installedApps,
-                        currentPackageName = currentPackageName
+                        installedApps = installedApps
                     ))
                 }.body()
 
@@ -1169,32 +1186,17 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val targetId = response.targetCandidateId
                         Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
                         if (targetId != null) {
-                            val systemAndImePackages = setOf(
-                                "android",
-                                "com.android.systemui",
-                                "com.google.android.inputmethod.latin",
-                                "com.sec.android.inputmethod",
-                                "com.samsung.android.honeyboard"
-                            )
-                            val isAlreadyRunning = windows?.any { 
-                                val pkg = it.root?.packageName?.toString()
-                                pkg == targetId && pkg !in systemAndImePackages 
-                            } ?: (rootInActiveWindow?.packageName?.toString() == targetId)
-
-                            if (isAlreadyRunning) {
-                                Log.d(TAG, "앱이 이미 화면에 활성화되어 있으므로 OPEN_APP 재실행을 차단합니다: $targetId")
+                            val query = if (!response.actionArguments.isNullOrBlank()) {
+                                response.actionArguments
                             } else {
-                                val query = if (!response.actionArguments.isNullOrBlank()) {
-                                    response.actionArguments
-                                } else {
-                                    cleanSearchQuery(command)
-                                }
-                                val launchedPkg = openAppByName(targetId, query)
-                                if (launchedPkg != null) {
-                                    val finalGoal = agentSessionManager.currentGoal ?: command
-                                    errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
-                                    startGuideFlow(finalGoal, launchedPkg)
-                                }
+                                cleanSearchQuery(command)
+                            }
+                            val launchedPkg = openAppByName(targetId, query)
+                            if (launchedPkg != null) {
+                                Log.d(TAG, "앱 실행 후 가이드 흐름 진행 (패키지: $launchedPkg)")
+                                val finalGoal = agentSessionManager.currentGoal ?: command
+                                errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
+                                startGuideFlow(finalGoal, launchedPkg)
                             }
                         }
                     } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {
@@ -1509,6 +1511,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         fun traverse(node: AccessibilityNodeInfo?) {
             if (node == null) return
+            // 똑띠 앱 내부 오버레이 요소들은 수집 제외 (무한 로딩 루프 방지)
+            val pkgName = node.packageName?.toString() ?: ""
+            if (pkgName == "kr.ac.kopo.talkti") {
+                return
+            }
             if (node.isVisibleToUser) {
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
@@ -1544,33 +1551,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
             traverse(rootInActiveWindow)
         } else {
             for (window in currentWindows) {
+                // 접근성 오버레이 윈도우(똑띠의 로딩바, 후보 오버레이 등)는 분석 대상에서 배제하여 무한 루프 방지
+                if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) {
+                    continue
+                }
                 traverse(window.root)
             }
         }
 
         return Json.encodeToString(elements)
-    }
-
-    private fun getActiveAppPackageName(): String? {
-        val rootPkg = rootInActiveWindow?.packageName?.toString()
-        val systemAndImePackages = setOf(
-            "android",
-            "com.android.systemui",
-            "com.google.android.inputmethod.latin",
-            "com.sec.android.inputmethod",
-            "com.samsung.android.honeyboard"
-        )
-        if (rootPkg != null && rootPkg !in systemAndImePackages) {
-            return rootPkg
-        }
-        val activeWindows = windows ?: return rootPkg
-        for (window in activeWindows) {
-            val pkg = window.root?.packageName?.toString()
-            if (pkg != null && pkg !in systemAndImePackages) {
-                return pkg
-            }
-        }
-        return rootPkg
     }
 
     private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED, keepInfinite: Boolean = false) {

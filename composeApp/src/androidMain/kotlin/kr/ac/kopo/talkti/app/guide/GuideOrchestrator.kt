@@ -151,21 +151,36 @@ class GuideOrchestrator(
      * @param uiTreeJson 현재 화면의 UI Tree JSON
      * @param scope 코루틴 스코프
      */
+    /**
+     * 현재 실행 중인 비동기 분석 작업을 취소하고 오버레이를 지운다.
+     */
+    fun cancelActiveAnalysis() {
+        if (isAnalyzing || analyzeJob != null) {
+            Log.d(TAG, "[디버그] 가이드 분석 작업 즉시 강제 취소 (cancelActiveAnalysis)")
+            analyzeJob?.cancel()
+            analyzeJob = null
+            isAnalyzing = false
+            candidateOverlayManager.clearOverlays()
+            actionButtonOverlayManager.clearHighlight()
+        }
+    }
+
     fun onUiChanged(uiTreeJson: String, scope: CoroutineScope) {
         if (!isActive) {
             Log.d(TAG, "[디버그] Guide 비활성 상태이므로 분석을 건너뜁니다.")
             return
         }
-        if (isAnalyzing) {
-            Log.d(TAG, "[디버그] UI 변경 이벤트 감지되었으나 이미 분석 중이므로 요청을 생략합니다.")
-            return
+
+        // 이전 분석 작업이 돌고 있다면 즉시 취소
+        if (isAnalyzing || analyzeJob != null) {
+            Log.d(TAG, "[디버그] 새로운 UI 변경 발생 → 진행 중인 이전 분석 강제 취소")
+            analyzeJob?.cancel()
         }
 
         Log.d(TAG, "[디버그] UI 변경 감지 → 분석 프로세스 시작 (isActive=$isActive, userCommand='$userCommand')")
         isAnalyzing = true
 
         val currentGen = guideGeneration
-        analyzeJob?.cancel()
         analyzeJob = scope.launch {
             try {
                 val request = GuideScreenRequest(
@@ -193,6 +208,9 @@ class GuideOrchestrator(
                     }
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) {
+                    throw e
+                }
                 Log.e(TAG, "[디버그] 서버 분석 에러 발생: ${e.message}")
                 withContext(Dispatchers.Main) {
                     if (currentGen == guideGeneration) {
@@ -202,7 +220,8 @@ class GuideOrchestrator(
                     }
                 }
             } finally {
-                if (currentGen == guideGeneration) {
+                // 레이스 컨디션을 막기 위해, 현재 종료되는 코루틴이 가장 최신의 분석 코루틴인 경우에만 잠금 해제
+                if (analyzeJob == coroutineContext[Job]) {
                     isAnalyzing = false
                     Log.d(TAG, "[디버그] 분석 프로세스 종료 (isAnalyzing = false, gen=$currentGen)")
                 }
