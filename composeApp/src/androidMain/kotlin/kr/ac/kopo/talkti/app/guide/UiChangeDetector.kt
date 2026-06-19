@@ -15,7 +15,8 @@ import kotlinx.serialization.json.Json
  * 400ms 디바운스 대기 후 [onMeaningfulChange]를 호출하여 새 분석을 진행한다.
  */
 class UiChangeDetector(
-    private val debounceMs: Long = 400L
+    private val debounceMs: Long = 400L,
+    private val getLatestUiTree: (() -> String)? = null
 ) {
     companion object {
         private const val TAG = "UiChangeDetector"
@@ -31,7 +32,7 @@ class UiChangeDetector(
     private var debounceJob: Job? = null
 
     /** 변경이 감지되었을 때 콜백 */
-    var onMeaningfulChange: ((uiTreeJson: String) -> Unit)? = null
+    var onMeaningfulChange: (() -> Unit)? = null
 
     /** 변경이 감지되기 시작한 즉시 호출되는 콜백 (오버레이 조기 제거용) */
     var onUiChangeDetected: (() -> Unit)? = null
@@ -41,6 +42,20 @@ class UiChangeDetector(
 
     /** 현재 분석 중인지 여부 (단순 상태 플래그) */
     var isAnalyzing: Boolean = false
+
+    /** 마지막 클릭 발생 시점 */
+    private var lastClickTime: Long = 0L
+
+    /** 앱 실행(런치) 중인지 여부 (앱 로딩 및 1.2초 초기 가이드 대기 시간 동안 이벤트 감지 무시용) */
+    var isAppLaunching: Boolean = false
+
+    /**
+     * 클릭이 발생했음을 감지기에 알린다.
+     */
+    fun notifyClick() {
+        lastClickTime = System.currentTimeMillis()
+        Log.d(TAG, "[디버그] 클릭 발생 기록: lastClickTime=$lastClickTime")
+    }
 
     /**
      * 새 UI Tree JSON을 받아 의미 있는 변경 여부를 판단한다.
@@ -53,6 +68,10 @@ class UiChangeDetector(
         screenHeight: Int,
         immediate: Boolean = false
     ) {
+        if (isAppLaunching) {
+            Log.d(TAG, "[디버그] 앱 실행 중이므로 UI 변경 감지 이벤트를 무시합니다.")
+            return
+        }
         lastScope = scope
 
         val elements = try {
@@ -89,14 +108,14 @@ class UiChangeDetector(
         } else {
             // 상단 헤더 영역 Jaccard 변화율 검사 (미세 변화 필터링)
             val headerChangeRate = computeJaccardDistance(previousHeaderTexts, headerTexts)
-            val headerChanged = previousHeaderTexts.isNotEmpty() && headerChangeRate >= 0.40
+            val headerChanged = previousHeaderTexts.isNotEmpty() && headerChangeRate >= 0.20
             if (headerChanged) {
                 isScreenTransition = true
                 reason = "상단 헤더 변경 감지 (변화율: ${(headerChangeRate * 100).toInt()}%)"
             } else {
                 // Jaccard 변화율 검사
                 val changeRate = computeJaccardDistance(previousClickableTexts, clickableTexts)
-                if (previousClickableTexts.isNotEmpty() && changeRate >= 0.40) {
+                if (previousClickableTexts.isNotEmpty() && changeRate >= 0.20) {
                     isScreenTransition = true
                     reason = "클릭 가능 요소 변화율 임계값 초과 (변화율: ${(changeRate * 100).toInt()}%)"
                 }
@@ -120,15 +139,57 @@ class UiChangeDetector(
         // 화면 전환이 확정되었으므로 즉시 기존 오버레이 제거 및 활성 분석 취소
         onUiChangeDetected?.invoke()
 
+        val timeSinceClick = System.currentTimeMillis() - lastClickTime
+        val actualDebounceMs = if (timeSinceClick < 1500L) {
+            1000L // 클릭 직후 과도기에는 정착을 위해 1000ms 추가 디바운스 대기
+        } else {
+            debounceMs
+        }
+
         debounceJob?.cancel()
         if (immediate || isFirstRun) {
             Log.d(TAG, "[디버그] UI 변경 감지: 즉시 실행 — onMeaningfulChange 호출")
-            onMeaningfulChange?.invoke(uiTreeJson)
+            onMeaningfulChange?.invoke()
         } else {
             debounceJob = scope.launch {
-                delay(debounceMs)
-                Log.d(TAG, "[디버그] UI 변경 감지: 디바운싱 완료 — onMeaningfulChange 호출")
-                onMeaningfulChange?.invoke(uiTreeJson)
+                // 클릭 직후 과도기에는 로딩바가 화면에 올라오기까지 최소 시간(500ms) 선지연
+                if (timeSinceClick < 1500L) {
+                    Log.d(TAG, "[디버그] 클릭 후 과도기 감지 -> 500ms 선지연 적용 (timeSinceClick=${timeSinceClick}ms)")
+                    delay(500)
+                }
+
+                var currentElements = elements
+                var attempts = 0
+                while (attempts < 10) { // 최대 3초 (10 * 300ms) 대기
+                    val hasProgress = currentElements.any { 
+                        it.visibleToUser && (
+                            it.className.contains("ProgressBar", ignoreCase = true) || 
+                            it.className.contains("Progress", ignoreCase = true) || 
+                            it.id.contains("progress", ignoreCase = true) ||
+                            it.text.contains("경로를 찾고", ignoreCase = true) ||
+                            it.text.contains("로딩", ignoreCase = true)
+                        )
+                    }
+                    if (!hasProgress) {
+                        break
+                    }
+                    Log.d(TAG, "[디버그] 화면에 로딩바 감지됨 -> 300ms 추가 대기 (시도: ${attempts + 1}/10)")
+                    delay(300)
+                    
+                    val latestUiTree = getLatestUiTree?.invoke()
+                    if (latestUiTree != null) {
+                        currentElements = try {
+                            Json.decodeFromString<List<UiElement>>(latestUiTree)
+                        } catch (e: Exception) {
+                            currentElements
+                        }
+                    }
+                    attempts++
+                }
+
+                delay(actualDebounceMs)
+                Log.d(TAG, "[디버그] UI 변경 감지: 디바운싱 완료 (대기시간: ${actualDebounceMs}ms) — onMeaningfulChange 호출")
+                onMeaningfulChange?.invoke()
             }
         }
     }
@@ -150,6 +211,8 @@ class UiChangeDetector(
         previousClickableTexts = emptySet()
         previousHeaderTexts = emptySet()
         isAnalyzing = false
+        isAppLaunching = false
+        lastClickTime = 0L
         lastScope = null
         debounceJob?.cancel()
         debounceJob = null

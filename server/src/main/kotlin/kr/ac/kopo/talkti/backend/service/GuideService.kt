@@ -170,8 +170,102 @@ class GuideService(
         val elements = runCatching { json.parseToJsonElement(uiTreeJson).jsonArray }
             .getOrElse { JsonArray(emptyList()) }
 
-        return elements.mapNotNull { element -> parseCandidate(element) }
-            .filter { (it.clickable || it.text.isNotBlank() || it.contentDesc.isNotBlank()) && it.enabled && it.visibleToUser }
+        val allParsed = elements.mapNotNull { element -> parseCandidate(element) }
+
+        val initialCandidates = allParsed
+            .filter { 
+                val isListContainer = it.className.endsWith("RecyclerView") || 
+                                     it.className.endsWith("ListView") || 
+                                     it.className.endsWith("ScrollView")
+                (it.clickable || it.text.isNotBlank() || it.contentDesc.isNotBlank() || isListContainer) 
+                && it.enabled && it.visibleToUser 
+            }
+
+        val containers = initialCandidates.filter { 
+            it.className.endsWith("RecyclerView") || 
+            it.className.endsWith("ListView") || 
+            it.className.endsWith("ScrollView")
+        }
+
+        // 컨테이너 노드들의 bounds를 내부에 속한 실제 자식 뷰들의 합산 영역으로 축소 보정
+        val adjustedContainers = containers.map { container ->
+            val childrenInContainer = allParsed.filter { child ->
+                child.candidateId != container.candidateId &&
+                child.visibleToUser &&
+                child.bounds.left >= container.bounds.left - 10 &&
+                child.bounds.right <= container.bounds.right + 10 &&
+                child.bounds.top >= container.bounds.top - 10 &&
+                child.bounds.bottom <= container.bounds.bottom + 10
+            }
+            if (childrenInContainer.isNotEmpty()) {
+                val minLeft = childrenInContainer.minOf { it.bounds.left }
+                val minTop = childrenInContainer.minOf { it.bounds.top }
+                val maxRight = childrenInContainer.maxOf { it.bounds.right }
+                val maxBottom = childrenInContainer.maxOf { it.bounds.bottom }
+                container.copy(
+                    bounds = RectDto(
+                        left = Math.max(container.bounds.left, minLeft),
+                        top = Math.max(container.bounds.top, minTop),
+                        right = Math.min(container.bounds.right, maxRight),
+                        bottom = Math.min(container.bounds.bottom, maxBottom)
+                    )
+                )
+            } else {
+                container
+            }
+        }
+
+        // 컨테이너 내부에 쏙 포함되는 자식 카드 노드들을 후보 목록에서 제외
+        val filteredCandidates = initialCandidates.filter { candidate ->
+            val isContainer = candidate.className.endsWith("RecyclerView") || 
+                              candidate.className.endsWith("ListView") || 
+                              candidate.className.endsWith("ScrollView")
+            
+            if (isContainer) {
+                true
+            } else {
+                val isInsideContainer = containers.any { container ->
+                    candidate.candidateId != container.candidateId &&
+                    candidate.bounds.left >= container.bounds.left - 10 &&
+                    candidate.bounds.right <= container.bounds.right + 10 &&
+                    candidate.bounds.top >= container.bounds.top - 10 &&
+                    candidate.bounds.bottom <= container.bounds.bottom + 10
+                }
+                !isInsideContainer
+            }
+        }.map { candidate ->
+            val matchedAdjusted = adjustedContainers.find { it.candidateId == candidate.candidateId }
+            matchedAdjusted ?: candidate
+        }
+
+        return filteredCandidates.map { candidate ->
+            val isListContainer = candidate.className.endsWith("RecyclerView") || 
+                                 candidate.className.endsWith("ListView") || 
+                                 candidate.className.endsWith("ScrollView")
+            
+            if ((candidate.clickable || isListContainer) && candidate.text.isBlank() && candidate.contentDesc.isBlank()) {
+                val childTexts = allParsed
+                    .filter { child ->
+                        child.candidateId != candidate.candidateId &&
+                        child.text.isNotBlank() &&
+                        child.visibleToUser &&
+                        child.bounds.left >= candidate.bounds.left - 10 &&
+                        child.bounds.right <= candidate.bounds.right + 10 &&
+                        child.bounds.top >= candidate.bounds.top - 10 &&
+                        child.bounds.bottom <= candidate.bounds.bottom + 10
+                    }
+                    .sortedBy { it.bounds.top }
+                    .map { it.text.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .take(5)
+                    .joinToString(" | ")
+
+                if (childTexts.isNotBlank()) candidate.copy(text = childTexts) else candidate
+            } else {
+                candidate
+            }
+        }
     }
 
     private fun parseCandidate(element: JsonElement): UiCandidate? {
@@ -256,14 +350,19 @@ class GuideService(
 - 이전 상태와 동일한 행동이고, 화면 구성도 비슷하면 unchanged=true
 - 광고 로딩, 미세한 레이아웃 변경 등은 unchanged=true
 
+[범용 목록/리스트 선택 화면에서의 오판 방지 규칙 (필수 준수)]
+- 화면 전체가 여러 선택지를 제공하는 목록(경로 목록, 장소 검색 결과 목록, 상품 목록, 메뉴 목록 등) 형태라면, 첫 번째 항목이 기본적으로 펼쳐져서(Expanded) 그 아래에 액션 버튼(예: '안내시작', '구매하기', '선택')이 크게 노출되어 보이고 다른 항목들은 접히거나 하단 광고 등으로 일부 잘려 보일지라도, 사용자가 이미 하나의 항목을 결정한 최종 확인 화면으로 절대 오판하지 마십시오.
+- 화면에 여러 항목이 나열되어 있다면 첫 번째 항목이 펼쳐져 있더라도 이는 여전히 선택 단계(SELECT_TARGET 또는 SELECT_OPTION)입니다. 따라서 성급하게 특정 항목의 버튼 하나만 PRESS_ACTION으로 유도하지 말고, 펼쳐진 항목을 포함해 화면에 노출된 다른 선택 가능한 항목들의 candidateId들을 모두 타겟으로 지정하여 사용자가 직접 고를 수 있도록 가이드하십시오.
+- 하단 광고 배너나 화면 뷰포트 영역의 경계에 의해 일부 선택 항목들이 반쯤 잘려서 표시되더라도, 선택지의 일부분이 화면에 노출되어 있다면 해당 항목의 candidateId도 반드시 타겟에 함께 포함하십시오.
+
 [앱별 행동 가이드 규칙 (필수 준수)]
 - 지도 앱 (카카오맵, 네이버지도 등):
   * 장소 검색 결과 목록이 나타나면 상태는 SELECT_TARGET 이고 검색된 장소 목록들의 candidateId들을 선택하세요.
   * 연관 검색어(추천 검색어)보다 실제 장소를 우선 선택하세요.
   * 최근 검색어(히스토리)는 절대 선택하지 마세요.
+  * 여러 추천 경로가 나열되는 [경로 목록 화면]에서는, 첫 번째 경로에 '안내 시작' 또는 '안내' 버튼이 펼쳐져서 보일지라도 즉시 PRESS_ACTION 상태로 해당 버튼 1개만 유도해서는 절대 안 됩니다. 반드시 상태를 SELECT_OPTION으로 지정하고 경로 목록 항목들의 candidateId들을 모두 선택하여 어르신이 경로를 직접 고르도록 유도하세요.
+  * 사용자가 한 경로를 최종적으로 클릭/선택하여, 해당 경로에 대한 단독 '안내 시작' 혹은 '안내' 버튼만 크게 화면에 노출되는 최종 화면에 진입했을 때에만 비로소 상태를 PRESS_ACTION으로 지정하고 해당 버튼을 선택하세요.
   * '도착' 관련 버튼이 보이면 상태는 PRESS_ACTION 이고 해당 버튼을 선택하세요.
-  * '안내 시작' 관련 버튼이 보이면 상태는 PRESS_ACTION 이고 해당 버튼을 선택하세요.
-  * 여러 경로 목록이 보이면 상태는 SELECT_OPTION 이고 경로 목록들을 선택하세요.
 - 택시 앱 (카카오T 등):
   * 장소 선택 후 택시 종류 선택은 SELECT_OPTION 이고 택시 종류 목록들을 선택하세요.
   * '호출' 관련 버튼은 PRESS_ACTION 이고 해당 버튼을 선택하세요.

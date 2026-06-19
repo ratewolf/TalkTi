@@ -69,8 +69,10 @@ class GuideOrchestrator(
     /** 분석 중 여부 (중복 요청 방지) */
     private var isAnalyzing: Boolean = false
         set(value) {
-            field = value
-            onAnalyzeStateChanged?.invoke(value)
+            if (field != value) {
+                field = value
+                onAnalyzeStateChanged?.invoke(value)
+            }
         }
 
     /** 분석 코루틴 Job */
@@ -155,14 +157,14 @@ class GuideOrchestrator(
      * 현재 실행 중인 비동기 분석 작업을 취소하고 오버레이를 지운다.
      */
     fun cancelActiveAnalysis() {
-        if (isAnalyzing || analyzeJob != null) {
-            Log.d(TAG, "[디버그] 가이드 분석 작업 즉시 강제 취소 (cancelActiveAnalysis)")
-            analyzeJob?.cancel()
-            analyzeJob = null
-            isAnalyzing = false
-            candidateOverlayManager.clearOverlays()
-            actionButtonOverlayManager.clearHighlight()
-        }
+        Log.d(TAG, "[디버그] 가이드 분석 작업 즉시 강제 취소 (cancelActiveAnalysis)")
+        guideGeneration++
+        analyzeJob?.cancel()
+        analyzeJob = null
+        isAnalyzing = false
+        // 분석 진행 여부와 무관하게 항상 오버레이 즉시 제거 (화면 전환 시 잔류 방지)
+        candidateOverlayManager.clearOverlays()
+        actionButtonOverlayManager.clearHighlight()
     }
 
     fun onUiChanged(uiTreeJson: String, scope: CoroutineScope) {
@@ -249,7 +251,11 @@ class GuideOrchestrator(
 
         // 타겟 좌표 최적화 적용 (실제 클릭 가능한 컨테이너 영역으로 매핑)
         val optimizedTargets = response.targets.map { target ->
-            val optBounds = TalkTiAccessibilityService.instance?.findOptimizedBounds(target.bounds) ?: target.bounds
+            val optBounds = if (newState == GuideState.SELECT_TARGET || newState == GuideState.SELECT_OPTION) {
+                TalkTiAccessibilityService.instance?.findOptimizedBounds(target.bounds) ?: target.bounds
+            } else {
+                target.bounds // 버튼 클릭 안내(PRESS_ACTION/CONFIRM)일 때는 강제 확장하지 않고 원래 버튼 크기 유지
+            }
             GuideTarget(
                 candidateId = target.candidateId,
                 text = target.text,

@@ -130,6 +130,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var currentGuideStep = GuideStep.NONE
     private var mediaType: String? = null // "사진" or "동영상"
     private var llmJob: Job? = null
+    private var thinkingJob: Job? = null
     private var testReceiver: android.content.BroadcastReceiver? = null
     private var lastInputText: String? = null
     private var lastInputTime: Long = 0L
@@ -169,12 +170,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val savedUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
         guideOrchestrator?.setServerUrl(savedUrl)
 
-        uiChangeDetector = UiChangeDetector().apply {
+        uiChangeDetector = UiChangeDetector(getLatestUiTree = { extractScreenTree() }).apply {
             onUiChangeDetected = {
                 Log.d(TAG, "[디버그] UI 변경 감지 시작 -> 기존 오버레이 제거 및 활성 분석 즉시 취소")
+                removeTargetHighlight()
                 candidateOverlayManager?.clearOverlays()
                 actionButtonOverlayManager?.clearHighlight()
                 guideOrchestrator?.cancelActiveAnalysis()
+                llmJob?.cancel()
+                llmJob = null
             }
         }
 
@@ -183,11 +187,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
             Log.d(TAG, "[디버그] GuideOrchestrator 분석 상태 변경 알림 -> UiChangeDetector.isAnalyzing = $analyzing")
             uiChangeDetector?.isAnalyzing = analyzing
             
-            // 분석 상태에 따라 LlmLoadingOverlay 연동
             CoroutineScope(Dispatchers.Main).launch {
+                floatingMenuManager?.updateLoadingStatus(analyzing)
                 if (analyzing) {
+                    val wasShowing = LlmLoadingOverlay.isShowing
                     LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
-                    speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.", "talkti_tts")
+                    if (!wasShowing) {
+                        speakTts("어떻게 도와드릴지 찾는 중이에요.")
+                    }
                 } else {
                     LlmLoadingOverlay.hide()
                 }
@@ -199,15 +206,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
             uiChangeDetector?.reset()
         }
 
-        uiChangeDetector?.onMeaningfulChange = { uiTreeJson ->
+        uiChangeDetector?.onMeaningfulChange = {
             removeTargetHighlight()
             val orchestrator = guideOrchestrator
             if (orchestrator != null && orchestrator.isActive) {
                 // 현재 패키지명 업데이트
                 val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                 orchestrator.updatePackageName(currentPkg)
-                Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → GuideOrchestrator.onUiChanged 호출")
-                orchestrator.onUiChanged(uiTreeJson, guideScope)
+                val latestUiTreeJson = extractScreenTree()
+                Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
+                orchestrator.onUiChanged(latestUiTreeJson, guideScope)
+            } else if (agentSessionManager.isActive) {
+                Log.d(TAG, "[디버그] 대화 세션 중 의미 있는 화면 전환 감지 -> 캡처 전송")
+                val currentGoal = agentSessionManager.currentGoal
+                if (currentGoal != null) {
+                    if (agentSessionManager.canCapture(1500)) { // 대중교통 등 빠른 탐색을 위해 1.5초 쿨다운으로 보정
+                        captureScreenForLLM(currentGoal)
+                    }
+                }
             }
         }
 
@@ -536,34 +552,33 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         // [수정] 사용자가 가이드된 타겟 영역을 클릭(터치)했을 때만 오버레이 및 TTS 정지/제거 처리
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clickedNode = event.source
-            if (clickedNode != null) {
-                val clickedRect = Rect()
-                clickedNode.getBoundsInScreen(clickedRect)
+            val orchestrator = guideOrchestrator
+            if (orchestrator != null && orchestrator.isActive) {
+                // 가이드 모드 중 어느 곳을 클릭하든 오버레이 즉시 정리
+                // (범위 체크 없이 항상 제거 → 장소 선택 후 화면 전환 시 오버레이 잔류 방지)
+                Log.d(TAG, "🎯 [가이드 모드 클릭] 오버레이 및 TTS 즉시 정리")
+                removeTargetHighlight()
+                candidateOverlayManager?.clearOverlays()
+                actionButtonOverlayManager?.clearHighlight()
+                textToSpeech?.stop()
                 
-                val orchestrator = guideOrchestrator
-                val shouldClear = if (orchestrator != null && orchestrator.isActive) {
-                    // 개별 타겟 내 클릭이거나 전체 후보 오버레이 영역 내 클릭인 경우 즉시 정리
-                    orchestrator.isClickInsideTargets(clickedRect) || orchestrator.isClickInsideOverlayArea(clickedRect)
-                } else {
-                    true // 가이드 모드가 아닐 때는 즉시 제거
-                }
+                // 클릭 발생을 UI 변경 감지기에 통지하여 과도기 지연 분석 트리거
+                uiChangeDetector?.notifyClick()
+            } else {
+                // 가이드 모드가 아닐 때도 항상 정리 및 클릭 통지
+                removeTargetHighlight()
+                candidateOverlayManager?.clearOverlays()
+                actionButtonOverlayManager?.clearHighlight()
                 
-                if (shouldClear) {
-                    Log.d(TAG, "🎯 [타겟 영역 클릭 감지] 오버레이 및 TTS 즉시 정리")
-                    removeTargetHighlight()
-                    candidateOverlayManager?.clearOverlays()
-                    actionButtonOverlayManager?.clearHighlight()
-                    textToSpeech?.stop()
-                } else {
-                    Log.d(TAG, "⚠️ [타겟 외 영역 클릭 감지] 오버레이 유지")
-                }
+                uiChangeDetector?.notifyClick()
             }
         }
 
         // ── 연속 가이드 티키타카 로직 ──
-        // 화면에 변화가 생기거나 클릭이 일어났을 때, 세션이 진행 중이면 자동 캡처 후 서버 전송
-        // (단, 실시간 가이드 오케스트레이터가 활성화된 상태이면 실시간 guide 루프에서 알아서 처리하므로 이 무거운 루프는 비활성화함)
+        // [수정] 기존 단순 클릭/이벤트 감지 기반 캡처 루프는 무력화하고, 
+        // 대신 UiChangeDetector의 의미 있는 화면 전환 감지(onMeaningfulChange) 콜백으로 완전히 대체하여
+        // 화면이 완전히 전환되고 안정된 후에만 캡처 및 전송이 일어나도록 처리합니다 (3초 딜레이 오동작 방지).
+        /*
         if (agentSessionManager.isActive && (guideOrchestrator == null || !guideOrchestrator!!.isActive)) {
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || 
                 event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
@@ -582,6 +597,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 }
             }
         }
+        */
 
         val command = pendingCommand
         if (command != null && !isKakaoTalkStep(currentGuideStep) && (
@@ -757,7 +773,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
             // ── [신규] UI 변경 감지 기반 가이드 (LLM 우선) ──
             val orchestrator = guideOrchestrator
-            if (orchestrator != null && orchestrator.isActive) {
+            val isActiveGuide = (orchestrator != null && orchestrator.isActive) || agentSessionManager.isActive
+            if (isActiveGuide) {
                 val uiTreeJsonForGuide = extractScreenTree()
                 val isWindowStateChanged = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 Log.d(TAG, "[디버그] 접근성 변경 이벤트 감지 (이벤트타입=${event.eventType}, 윈도우 전환=$isWindowStateChanged) → UiChangeDetector.onNewUiTree 전달")
@@ -1002,11 +1019,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun startGuideFlow(command: String, packageName: String) {
         uiChangeDetector?.reset()
+        uiChangeDetector?.isAppLaunching = true // 앱 런치 과도기 이벤트 무시 설정
         guideOrchestrator?.startGuide(command, packageName)
         
         // 가이드 시작 후 앱이 로딩되고 화면이 완전히 그려질 시간을 확보하기 위해 약간 지연 후 분석 실행 (3초 지연 현상 방지)
         guideScope.launch {
             delay(1200) // 1.2초 대기하여 카카오맵 검색 결과 등이 뜰 때까지 대기
+            uiChangeDetector?.isAppLaunching = false // 앱 런치 과도기 완료
             val initialUiTree = extractScreenTree()
             Log.d(TAG, "[디버그] 가이드 시작 후 지연 분석을 실행합니다.")
             guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
@@ -1138,11 +1157,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
         Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}")
 
         llmJob = CoroutineScope(Dispatchers.IO).launch {
+            var keepLoadingOverlay = false
             withContext(Dispatchers.Main) {
+                val wasShowing = LlmLoadingOverlay.isShowing
                 LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
                 floatingMenuManager?.bringToFront()
                 floatingMenuManager?.updateLoadingStatus(true)
-                speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
+                if (!wasShowing) {
+                    speakTts("어떻게 도와드릴지 찾는 중이에요.")
+                }
             }
             try {
                 val response: GuideActionResponse = client.post(serverUrl) {
@@ -1197,6 +1220,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 val finalGoal = agentSessionManager.currentGoal ?: command
                                 errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
                                 startGuideFlow(finalGoal, launchedPkg)
+                                keepLoadingOverlay = true
                             }
                         }
                     } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {
@@ -1205,6 +1229,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             val finalGoal = agentSessionManager.currentGoal ?: command
                             errorHandlingManager.onGuideStarted(currentPkg, finalGoal)
                             startGuideFlow(finalGoal, currentPkg)
+                            keepLoadingOverlay = true
                         }
                     } else {
                         Log.d(TAG, "대화형 상태(ASK_USER 등) 또는 기타 상태 - guideOrchestrator 가이드 흐름을 시작하지 않습니다.")
@@ -1243,8 +1268,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 }
             } finally {
                 withContext(Dispatchers.Main) {
-                    floatingMenuManager?.updateLoadingStatus(false)
-                    LlmLoadingOverlay.hide()
+                    if (!keepLoadingOverlay) {
+                        floatingMenuManager?.updateLoadingStatus(false)
+                        LlmLoadingOverlay.hide()
+                    }
                 }
             }
         }
@@ -1658,6 +1685,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
         
         var temp: AccessibilityNodeInfo? = node
         var count = 0
+        
+        fun countClickableDescendants(n: AccessibilityNodeInfo?): Int {
+            if (n == null) return 0
+            var c = if (n.isClickable && n.isVisibleToUser) 1 else 0
+            for (i in 0 until n.childCount) {
+                c += countClickableDescendants(n.getChild(i))
+            }
+            return c
+        }
+
         while (temp != null && count < 3) {
             if (temp.isClickable) {
                 val tempRect = Rect()
@@ -1669,7 +1706,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 // 화면의 가로 폭 전체를 거의 다 덮거나 세로로 너무 거대하지 않은 적절한 크기의 클릭 가능한 컨테이너만 선택
                 if (tempRect.width() > bestRect.width() || tempRect.height() > bestRect.height()) {
                     if (tempRect.width() < screenWidth * 0.95 && tempRect.height() < screenHeight * 0.4) {
-                        bestNode = temp
+                        // 클릭 가능한 다른 형제/자식 버튼들이 여러 개 포함된 부모 레이아웃 행(예: 시간표/출발/도착 버튼 행)은 최적화 대상에서 제외
+                        if (countClickableDescendants(temp) <= 1) {
+                            bestNode = temp
+                        }
                     }
                 }
             }

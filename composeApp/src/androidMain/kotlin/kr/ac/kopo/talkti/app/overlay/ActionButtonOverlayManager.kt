@@ -118,6 +118,12 @@ class ActionButtonOverlayManager(
 
             gravity = Gravity.TOP or Gravity.START
 
+            // 접근성 API의 getBoundsInScreen()은 상태바 포함 절대 좌표를 반환한다.
+            // TYPE_ACCESSIBILITY_OVERLAY + FLAG_LAYOUT_IN_SCREEN 조합에서는
+            // WindowManager의 (x, y)도 상태바 포함 절대 좌표로 해석되므로 그대로 사용.
+            val statusBarHeight = getStatusBarHeight()
+            Log.d("ActionButtonOverlay", "상태바 높이: ${statusBarHeight}px, 입력 bounds=(${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom})")
+
             x = bounds.left
             y = bounds.top
 
@@ -276,5 +282,14 @@ class ActionButtonOverlayManager(
                 value *
                         context.resources.displayMetrics.density
                 ).toInt()
+    }
+
+    /**
+     * 상태바 높이(픽셀) 반환
+     * 모드별로 상태바 크기가 다르므로 리소스에서 실제 값을 계산한다.
+     */
+    private fun getStatusBarHeight(): Int {
+        val resourceId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (resourceId > 0) context.resources.getDimensionPixelSize(resourceId) else 0
     }
 }
