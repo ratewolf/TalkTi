@@ -166,7 +166,7 @@ class GuideOrchestrator(
 
         val currentGen = guideGeneration
         analyzeJob?.cancel()
-        analyzeJob = scope.launch {
+        analyzeJob = scope.launch(Dispatchers.IO) {
             try {
                 val request = GuideScreenRequest(
                     userCommand = userCommand,

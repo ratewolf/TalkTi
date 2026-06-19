@@ -95,7 +95,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
     // ── UI 변경 감지 기반 가이드 시스템 ──
     private var guideOrchestrator: GuideOrchestrator? = null
     private var uiChangeDetector: UiChangeDetector? = null
-    private val guideScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceJob = SupervisorJob()
+    private val mainScope = CoroutineScope(Dispatchers.Main.immediate + serviceJob)
+    private val backgroundScope = CoroutineScope(Dispatchers.IO + serviceJob)
+    private val guideScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob(serviceJob))
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -368,7 +371,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         Log.d(TAG, "TTS 종료: $utteranceId")
                         if (utteranceId == "talkti_selection_ask") {
                             // TTS가 끝난 후 음성 인식을 재개합니다.
-                            CoroutineScope(Dispatchers.Main).launch {
+                            mainScope.launch {
                                 delay(500) // 안정성을 위해 약간의 지연
                                 Log.d(TAG, "음성 인식 재개 시도 (utteranceId=$utteranceId)")
                                 startAppGuide()
@@ -376,7 +379,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         }
                         // [신규] 완료 안내 TTS가 끝났을 때 stopGuide() 실제 정리 호출
                         if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
-                            CoroutineScope(Dispatchers.Main).launch {
+                            mainScope.launch {
                                 Log.d(TAG, "[디버그] 완료 안내 TTS 종료 확인 → stopGuide() 호출")
                                 guideOrchestrator?.stopGuide()
                             }
@@ -386,7 +389,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         Log.e(TAG, "TTS 에러: $utteranceId")
                         // [신규] 완료 안내 TTS 도중 에러가 나도 강제 stopGuide() 처리하여 교착 방지
                         if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
-                            CoroutineScope(Dispatchers.Main).launch {
+                            mainScope.launch {
                                 Log.e(TAG, "[디버그] 완료 안내 TTS 에러 발생 → stopGuide() 강제 호출")
                                 guideOrchestrator?.stopGuide()
                             }
@@ -549,7 +552,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val currentGoal = agentSessionManager.currentGoal
                     if (currentGoal != null) {
                         Log.d(TAG, "티키타카 루프 동작: 화면 전환/클릭 감지 -> 캡처 전송 (목표: $currentGoal)")
-                        CoroutineScope(Dispatchers.Main).launch {
+                        mainScope.launch {
                             delay(800) // [수정] 반응 속도를 올리기 위해 대기 시간 단축 (1000ms -> 800ms)
                             if (!LlmLoadingOverlay.isShowing) {
                                 captureScreenForLLM(currentGoal)
@@ -567,7 +570,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     )
         ) {
             println("📡 [이벤트 감지] 타입: ${event.eventType}, 현재 대기 목적지: $command")
-            CoroutineScope(Dispatchers.Main).launch {
+            mainScope.launch {
                 delay(600) // 새로운 화면이 완전히 그려질 시간 대기
                 val currentCmd = pendingCommand
                 if (currentCmd != null && !isKakaoTalkStep(currentGuideStep)) {
@@ -581,7 +584,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                         if (isAutoDestinationFlowActive) {
 
-                            CoroutineScope(Dispatchers.Main).launch {
+                            mainScope.launch {
 
                                 delay(1500)
 
@@ -1070,6 +1073,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     fun captureScreenForLLM(userCommand: String) {
         removeTargetHighlight()
+        showLlmLoading()
+
         val screenSessionId = agentSessionManager.sessionId ?: "screen_${System.currentTimeMillis()}"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
@@ -1077,17 +1082,41 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val hardwareBuffer = screenshotResult.hardwareBuffer
                     val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshotResult.colorSpace)
                     val realUiTree = extractScreenTree()
-
-                    if (bitmap != null) {
-                        val base64Image = bitmapToBase64(bitmap)
-                        sendDataToServer(userCommand, base64Image, realUiTree, screenSessionId)
-                    }
+                    val softwareBitmap = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
                     hardwareBuffer.close()
+
+                    if (softwareBitmap != null) {
+                        llmJob?.cancel()
+                        llmJob = backgroundScope.launch {
+                            val base64Image = bitmapToBase64(softwareBitmap)
+                            softwareBitmap.recycle()
+                            sendDataToServer(userCommand, base64Image, realUiTree, screenSessionId)
+                        }
+                    } else {
+                        hideLlmLoading()
+                    }
                 }
 
-                override fun onFailure(errorCode: Int) {}
+                override fun onFailure(errorCode: Int) {
+                    Log.e(TAG, "스크린샷 실패: errorCode=$errorCode")
+                    hideLlmLoading()
+                }
             })
+        } else {
+            hideLlmLoading()
         }
+    }
+
+    private fun showLlmLoading() {
+        LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+        floatingMenuManager?.bringToFront()
+        floatingMenuManager?.updateLoadingStatus(true)
+        speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
+    }
+
+    private fun hideLlmLoading() {
+        floatingMenuManager?.updateLoadingStatus(false)
+        LlmLoadingOverlay.hide()
     }
 
     private fun getInstalledApps(): List<AppInfo> {
@@ -1104,7 +1133,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
+    private suspend fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
         val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
         var baseUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
 
@@ -1119,14 +1148,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         Log.d(TAG, "서버 전송 시작: $serverUrl, 명령어: $command, 앱 개수: ${installedApps.size}, 현재앱: $currentPackageName")
 
-        llmJob = CoroutineScope(Dispatchers.IO).launch {
-            withContext(Dispatchers.Main) {
-                LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
-                floatingMenuManager?.bringToFront()
-                floatingMenuManager?.updateLoadingStatus(true)
-                speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
-            }
-            try {
+        try {
                 val response: GuideActionResponse = client.post(serverUrl) {
                     contentType(ContentType.Application.Json)
                     header("bypass-tunnel-reminder", "true")
@@ -1212,7 +1234,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
                         println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
                         response.targetBounds?.let { bounds ->
-                            CoroutineScope(Dispatchers.Main).launch {
+                            mainScope.launch {
                                 delay(1000)
                                 val success = performImmediateActionSetText(bounds, response.actionArguments!!)
                                 if (!success) {
@@ -1224,7 +1246,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     } else if (response.actionType == "CLICK") {
                         println("자동 클릭 예약 실행 (사용자 클릭 유도로 변경하여 자동 클릭 비활성화)")
                         response.targetBounds?.let { bounds ->
-                            CoroutineScope(Dispatchers.Main).launch {
+                            mainScope.launch {
                                 delay(1000)
                                 // [수정] 자동 클릭 기능을 제거하여 사용자가 하이라이트를 보고 직접 클릭하도록 함
                                 // performImmediateActionClick(bounds)
@@ -1233,17 +1255,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         }
                     }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
-                withContext(Dispatchers.Main) {
-                    floatingMenuManager?.updateLoadingStatus(false)
-                    Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            } finally {
-                withContext(Dispatchers.Main) {
-                    floatingMenuManager?.updateLoadingStatus(false)
-                    LlmLoadingOverlay.hide()
-                }
+        } catch (e: Exception) {
+            Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        } finally {
+            withContext(Dispatchers.Main) {
+                hideLlmLoading()
             }
         }
     }
@@ -1318,7 +1337,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 removeTargetHighlight()
                 val scrolled = attemptScrollForward()
                 if (scrolled) {
-                    CoroutineScope(Dispatchers.Main).launch {
+                    mainScope.launch {
                         delay(1000) // 스크롤 애니메이션 대기
                         startSelectionFlow(isContinuation = true)
                     }
@@ -1484,7 +1503,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         // [신규] 가이드 시스템 정리
         guideOrchestrator?.destroy()
         uiChangeDetector?.destroy()
-        guideScope.cancel()
+        serviceJob.cancel()
         testReceiver?.let {
             try {
                 unregisterReceiver(it)
@@ -1499,6 +1518,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         textToSpeech?.shutdown()
         removeTargetHighlight()
         floatingMenuManager?.hide()
+        LlmLoadingOverlay.hide()
         candidateOverlayManager?.clearOverlays()
         actionButtonOverlayManager?.clearHighlight()
     }
@@ -1617,7 +1637,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
 
         if (!keepInfinite) {
-            highlightJob = CoroutineScope(Dispatchers.Main).launch {
+            highlightJob = mainScope.launch {
                 delay(3000) // 3초간 유지 후 제거
                 removeTargetHighlight()
             }
