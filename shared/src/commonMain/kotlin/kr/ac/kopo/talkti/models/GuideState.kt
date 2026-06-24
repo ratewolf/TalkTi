@@ -23,6 +23,9 @@ enum class GuideState {
     /** 사용자가 특정 버튼을 눌러야 함 (도착, 호출, 전송, 안내 시작 등) */
     PRESS_ACTION,
 
+    /** 사용자가 검색 입력창을 탭해야 함 (탭 후 텍스트 자동 주입) */
+    PRESS_ACTION_EDIT_TEXT,
+
     /** 사용자가 옵션 중 하나를 선택해야 함 (경로 추천 등) */
     SELECT_OPTION,
 

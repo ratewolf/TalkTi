@@ -95,7 +95,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     // ── UI 변경 감지 기반 가이드 시스템 ──
     private var guideOrchestrator: GuideOrchestrator? = null
     private var uiChangeDetector: UiChangeDetector? = null
-    private val guideScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    internal val guideScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -192,7 +192,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 if (analyzing) {
                     val wasShowing = LlmLoadingOverlay.isShowing
                     LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
-                    if (!wasShowing) {
+                    // TTS가 이미 말하는 중이면 '생각중' 멘트를 끼워넣지 않음
+                    // ("서울역을 입력할게요" 같은 액션 TTS가 잘리는 현상 방지)
+                    if (!wasShowing && textToSpeech?.isSpeaking != true) {
                         speakTts("어떻게 도와드릴지 찾는 중이에요.")
                     }
                 } else {
@@ -1532,7 +1534,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         actionButtonOverlayManager?.clearHighlight()
     }
 
-    private fun extractScreenTree(): String {
+    internal fun extractScreenTree(): String {
         val elements = mutableListOf<UiElement>()
         var candidateCounter = 0
 
@@ -1649,7 +1651,70 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * [오버레이 범위 좁히기] bounds 안에 클릭 가능 요소가 여러 개 존재하면,
+     * targetText와 일치하는 가장 작은 자식 요소의 bounds를 반환합니다.
+     *
+     * 예시:
+     * - 카카오톡 '+' 버튼 접근성 bounds가 하단 입력 바 전체를 덮을 때 → '+' 텍스트를 가진 가장 작은 ImageButton 반환
+     * - '사진' 엘리먼트 bounds가 전체 미디어 그리드를 덮을 때 → '사진' 텍스트 셀만 반환
+     *
+     * 단일 요소(카카오맵 전체너비 버튼 등)일 때는 원본 bounds 유지
+     * 지도/택시에는 영향 없음 (대부분의 지도 액션 버튼은 단일 요소)
+     */
+    internal fun shrinkBoundsIfMultipleElements(bounds: RectDto, targetText: String): RectDto {
+        val root = rootInActiveWindow ?: return bounds
+        data class NodeRect(val node: AccessibilityNodeInfo, val rect: Rect)
+        val clickableInBounds = mutableListOf<NodeRect>()
+
+        fun collectClickable(node: AccessibilityNodeInfo?) {
+            if (node == null) return
+            if (!node.isVisibleToUser) return
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            // 주어진 bounds 안에 실제로 들어오는 노드만
+            if (rect.left < bounds.left - 30 || rect.top < bounds.top - 30 ||
+                rect.right > bounds.right + 30 || rect.bottom > bounds.bottom + 30) return
+            if (rect.width() <= 0 || rect.height() <= 0) return
+            if (node.isClickable || node.isLongClickable) {
+                clickableInBounds.add(NodeRect(node, rect))
+            }
+            for (i in 0 until node.childCount) collectClickable(node.getChild(i))
+        }
+        collectClickable(root)
+
+        // 클릭 가능 요소가 2개 미만이면 실험(bounds 자체가 올바른 버튼일 수 있음)
+        if (clickableInBounds.size < 2) return bounds
+
+        // targetText와 일치하는 노드를 우선적으로 찾음
+        val best = if (targetText.isNotBlank()) {
+            clickableInBounds.minByOrNull { (node, rect) ->
+                val t = node.text?.toString() ?: ""
+                val d = node.contentDescription?.toString() ?: ""
+                val matchScore = when {
+                    t.equals(targetText, ignoreCase = true) || d.equals(targetText, ignoreCase = true) -> 0L
+                    t.contains(targetText, ignoreCase = true) || d.contains(targetText, ignoreCase = true) -> 1_000_000L
+                    else -> 2_000_000L
+                }
+                matchScore + rect.width().toLong() * rect.height().toLong()
+            }
+        } else {
+            clickableInBounds.minByOrNull { (_, rect) -> rect.width().toLong() * rect.height().toLong() }
+        } ?: return bounds
+
+        val matchRect = best.rect
+        val originalArea = (bounds.right - bounds.left).toLong() * (bounds.bottom - bounds.top).toLong()
+        val matchArea = matchRect.width().toLong() * matchRect.height().toLong()
+        return if (matchArea < originalArea * 0.6) {
+            Log.d("AccessSvc", "[shrink] bounds 내 ${clickableInBounds.size}개 요소 → '$targetText' 로 좁힘: $bounds → $matchRect")
+            RectDto(matchRect.left, matchRect.top, matchRect.right, matchRect.bottom)
+        } else {
+            bounds
+        }
+    }
+
     fun findOptimizedBounds(bounds: RectDto): RectDto {
+
         val activeWindows = windows ?: emptyList()
         var foundNode: AccessibilityNodeInfo? = null
         
@@ -1695,19 +1760,26 @@ class TalkTiAccessibilityService : AccessibilityService() {
             return c
         }
 
+        val originalRect = Rect()
+        node.getBoundsInScreen(originalRect)
+
         while (temp != null && count < 3) {
             if (temp.isClickable) {
                 val tempRect = Rect()
                 temp.getBoundsInScreen(tempRect)
-                
+
                 val bestRect = Rect()
                 bestNode.getBoundsInScreen(bestRect)
-                
+
                 // 화면의 가로 폭 전체를 거의 다 덮거나 세로로 너무 거대하지 않은 적절한 크기의 클릭 가능한 컨테이너만 선택
                 if (tempRect.width() > bestRect.width() || tempRect.height() > bestRect.height()) {
                     if (tempRect.width() < screenWidth * 0.95 && tempRect.height() < screenHeight * 0.4) {
-                        // 클릭 가능한 다른 형제/자식 버튼들이 여러 개 포함된 부모 레이아웃 행(예: 시간표/출발/도착 버튼 행)은 최적화 대상에서 제외
-                        if (countClickableDescendants(temp) <= 1) {
+                        // 원본 노드 대비 2배 이상 커지는 확장은 금지 (아이콘 그룹 등 과도한 확장 방지)
+                        val notTooBig = originalRect.width() == 0 ||
+                            (tempRect.width() <= originalRect.width() * 2 &&
+                             tempRect.height() <= originalRect.height() * 2)
+                        // 클릭 가능한 다른 형제/자식 버튼들이 여러 개 포함된 부모 레이아웃 행은 최적화 대상에서 제외
+                        if (notTooBig && countClickableDescendants(temp) <= 1) {
                             bestNode = temp
                         }
                     }
@@ -1722,33 +1794,84 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return RectDto(finalRect.left, finalRect.top, finalRect.right, finalRect.bottom)
     }
 
-    private fun performImmediateActionSetText(bounds: RectDto, text: String): Boolean {
+    internal fun performImmediateActionSetText(bounds: RectDto, text: String): Boolean {
         val rootNode = rootInActiveWindow ?: return false
         var success = false
 
-        fun traverse(node: AccessibilityNodeInfo?) {
+        // EditText 노드에 텍스트를 주입하는 내부 헬퍼
+        // 1) ACTION_SET_TEXT 시도 → 실패 시 2) 클립보드 붙여넣기
+        // ⚠️ ACTION_CLICK은 의도적으로 사용하지 않음:
+        //    Kakao T 검색창은 화면이 열릴 때 이미 포커스되어 있으며,
+        //    클릭 이벤트를 발생시키면 UiChangeDetector가 재분석을 트리거하여
+        //    오버레이 루프와 혼선이 발생함.
+        fun injectTextIntoNode(node: AccessibilityNodeInfo): Boolean {
+            // 방법 1: ACTION_SET_TEXT (표준, 일부 앱 지원)
+            val arguments = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                Log.d(TAG, "[디버그] ACTION_SET_TEXT 성공")
+                return true
+            }
+            // 방법 2: 클립보드 붙여넣기 (커스텀 EditText 대응, 클릭 없이 직접 paste)
+            return try {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("talkti_input", text)
+                clipboard.setPrimaryClip(clip)
+                val pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+                Log.d(TAG, "[디버그] 클립보드 붙여넣기 결과: $pasted")
+                pasted
+            } catch (e: Exception) {
+                Log.e(TAG, "[디버그] 클립보드 붙여넣기 실패: ${e.message}")
+                false
+            }
+        }
+
+        // 1차 시도: bounds 좌표 매칭 (50px 오차 허용)
+        fun traverseByBounds(node: AccessibilityNodeInfo?) {
             if (node == null || success) return
             if (node.isVisibleToUser) {
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
-
-                // 50픽셀 오차범위 내 좌표 보정 매칭
                 if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
-                    val arguments = Bundle().apply {
-                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                    }
-                    success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                    success = injectTextIntoNode(node)
                     if (success) return
                 }
             }
             for (i in 0 until node.childCount) {
-                traverse(node.getChild(i))
+                traverseByBounds(node.getChild(i))
             }
         }
+        traverseByBounds(rootNode)
 
-        traverse(rootNode)
+        // 2차 시도 (fallback): bounds 매칭 실패 또는 (0,0) 더미 bounds인 경우
+        // → 화면 내 EditText / AutoCompleteTextView / isEditable 노드를 직접 탐색하여 주입
+        if (!success) {
+            Log.d(TAG, "[디버그] bounds 매칭 실패 → EditText 타입 기반 fallback 탐색")
+            fun traverseByClass(node: AccessibilityNodeInfo?) {
+                if (node == null || success) return
+                if (node.isVisibleToUser) {
+                    val className = node.className?.toString() ?: ""
+                    val isEditText = className.contains("EditText") || className.contains("AutoCompleteTextView") || node.isEditable
+                    if (isEditText) {
+                        Log.d(TAG, "[디버그] EditText 발견: className=$className")
+                        success = injectTextIntoNode(node)
+                        if (success) {
+                            Log.d(TAG, "[디버그] EditText fallback 주입 성공")
+                            return
+                        }
+                    }
+                }
+                for (i in 0 until node.childCount) {
+                    traverseByClass(node.getChild(i))
+                }
+            }
+            traverseByClass(rootNode)
+        }
+
         return success
     }
+
 
     private fun performImmediateActionClick(bounds: RectDto): Boolean {
         val rootNode = rootInActiveWindow ?: return false

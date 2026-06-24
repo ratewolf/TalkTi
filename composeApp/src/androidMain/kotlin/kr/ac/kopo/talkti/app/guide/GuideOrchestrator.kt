@@ -282,12 +282,17 @@ class GuideOrchestrator(
         candidateOverlayManager.clearOverlays()
         actionButtonOverlayManager.clearHighlight()
 
+        val actionArgs = response.actionArguments
+        val isSetTextAction = response.actionType == "ACTION_SET_TEXT" && !actionArgs.isNullOrBlank()
+
         when (newState) {
             GuideState.SELECT_TARGET, GuideState.SELECT_OPTION -> {
                 showCandidateOverlays(optimizedTargets)
             }
-            GuideState.PRESS_ACTION, GuideState.CONFIRM -> {
-                showActionOverlay(optimizedTargets)
+            GuideState.PRESS_ACTION, GuideState.PRESS_ACTION_EDIT_TEXT, GuideState.CONFIRM -> {
+                if (!isSetTextAction) {
+                    showActionOverlay(optimizedTargets)
+                }
             }
             GuideState.COMPLETE -> {
                 candidateOverlayManager.clearOverlays()
@@ -306,6 +311,42 @@ class GuideOrchestrator(
                 // 할 일 없음
             }
         }
+
+        // 자동 텍스트 입력 액션 실행
+        if (isSetTextAction) {
+            Log.d(TAG, "[디버그] 가이드 흐름 자동 텍스트 입력 실행 예약 (Silent): $actionArgs")
+            val targetBounds = optimizedTargets.firstOrNull()?.bounds
+                ?: RectDto(0, 0, 0, 0)
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(300) // 안정화 대기
+                val service = TalkTiAccessibilityService.instance
+                val success = service?.performImmediateActionSetText(targetBounds, actionArgs!!)
+                Log.d(TAG, "[디버그] 가이드 흐름 자동 텍스트 입력 결과: success=$success")
+                if (success == true) {
+                    // Kakao T 실시간 장소 리스트가 렌더링될 때까지 대기
+                    // 300ms씩 최대 4번(1.2초) 대기하면서 클릭 가능 후보 3개 이상이면 렌더 완료로 판단
+                    var placeListReady = false
+                    repeat(4) { attempt ->
+                        if (!placeListReady) {
+                            delay(300)
+                            val tree = service.extractScreenTree()
+                            val candidates = try {
+                                kotlinx.serialization.json.Json.decodeFromString<List<kr.ac.kopo.talkti.models.UiElement>>(tree)
+                                    .count { it.clickable && it.visibleToUser && it.enabled }
+                            } catch (e: Exception) { 0 }
+                            Log.d(TAG, "[디버그] 장소 리스트 렌더 대기 (${attempt + 1}/4): 클릭 가능 후보 $candidates 개")
+                            if (candidates >= 3) {
+                                placeListReady = true
+                            }
+                        }
+                    }
+                    Log.d(TAG, "[디버그] 자동 입력 완료 → 후속 분석 트리거 (placeListReady=$placeListReady)")
+                    val newTree = service.extractScreenTree()
+                    onUiChanged(newTree, service.guideScope)
+                }
+            }
+        }
+
 
         // TTS 안내 (동일 타겟/상태면 스킵하여 안내 중복 방지)
         if (response.tts.isNotBlank()) {
@@ -418,16 +459,19 @@ class GuideOrchestrator(
     private fun showCandidateOverlays(targets: List<GuideTarget>) {
         if (targets.isEmpty()) return
 
+        val service = TalkTiAccessibilityService.instance
         val candidates = targets.mapNotNull { t ->
             val b = t.bounds
             if (b.left >= b.right || b.top >= b.bottom) {
                 Log.w(TAG, "[디버그] 유효하지 않은 candidate bounds 발견하여 스킵: text=${t.text}, bounds=[l=${b.left}, t=${b.top}, r=${b.right}, b=${b.bottom}]")
                 null
             } else {
+                // 하나의 큰 bounds 안에 여러 클릭 요소가 있으면 타겟 텍스트에 맞게 좁힘
+                val tightBounds = service?.shrinkBoundsIfMultipleElements(b, t.text) ?: b
                 Candidate(
                     id = t.candidateId,
                     text = t.text,
-                    bounds = b
+                    bounds = tightBounds
                 )
             }
         }
@@ -454,9 +498,14 @@ class GuideOrchestrator(
             return
         }
 
-        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, bounds=$b")
+        // 하나의 큰 bounds 안에 여러 클릭 요소가 있으면 타겟 텍스트에 맞게 좁힘
+        // (예: 카카오톡 '+' 버튼 bounds가 하단 입력 바 전체를 덮는 경우)
+        val service = TalkTiAccessibilityService.instance
+        val tightBounds = service?.shrinkBoundsIfMultipleElements(b, first.text) ?: b
+
+        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, 원본=${b}, 최종=${tightBounds}")
         actionButtonOverlayManager.showActionButtonHighlight(
-            b,
+            tightBounds,
             first.text
         )
     }

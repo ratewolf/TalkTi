@@ -20,7 +20,13 @@ data class GuideScreenResponse(
     val tts: String,
 
     /** 상태가 바뀌지 않은 경우 true — 오버레이/TTS를 재실행하지 않기 위한 플래그 */
-    val unchanged: Boolean = false
+    val unchanged: Boolean = false,
+
+    /** 텍스트 입력 등의 추가 액션 타입 (예: ACTION_SET_TEXT) */
+    val actionType: String? = null,
+
+    /** 액션 수행에 필요한 인수 (예: 입력할 텍스트) */
+    val actionArguments: String? = null
 )
 
 /**
