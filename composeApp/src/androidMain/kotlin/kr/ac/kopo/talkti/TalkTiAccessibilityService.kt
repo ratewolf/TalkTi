@@ -655,6 +655,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 } else {
                     val searchButton = findKakaoTalkSearchButton(rootNode)
                     if (searchButton != null) {
+                        Log.d("DUMP_검색", extractScreenTree())
                         val rect = Rect()
                         searchButton.getBoundsInScreen(rect)
                         val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
@@ -704,6 +705,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 } else {
                     val chatMenuButton = findKakaoTalkChatMenuButton(rootNode)
                     if (chatMenuButton != null) {
+                        Log.d("DUMP_플러스", extractScreenTree())
                         val rect = Rect()
                         chatMenuButton.getBoundsInScreen(rect)
                         val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
@@ -720,6 +722,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 } else {
                     val mediaButton = findKakaoTalkMediaButton(rootNode, mediaType ?: "사진")
                     if (mediaButton != null) {
+                        Log.d("DUMP_사진", extractScreenTree())
                         val rect = Rect()
                         mediaButton.getBoundsInScreen(rect)
                         val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
