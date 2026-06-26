@@ -95,7 +95,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
     // ── UI 변경 감지 기반 가이드 시스템 ──
     private var guideOrchestrator: GuideOrchestrator? = null
     private var uiChangeDetector: UiChangeDetector? = null
-    internal val guideScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    private val serviceJob = SupervisorJob()
+    private val mainScope = CoroutineScope(Dispatchers.Main.immediate + serviceJob)
+
+    private val backgroundScope = CoroutineScope(Dispatchers.IO + serviceJob)
+
+    internal val guideScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -899,8 +905,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "네이버맵" to listOf("com.nhn.android.nmap"),
             //택시
             "택시" to listOf("com.kakao.taxi"),
-            "카카오택시" to listOf("com.kakao.taxi"),
             "카카오티" to listOf("com.kakao.taxi"),
+            "카카오t" to listOf("com.kakao.taxi"),
+            "카카오택시" to listOf("com.kakao.taxi"),
             "콜택시" to listOf("com.kakao.taxi"),
             //통신
             "전화" to listOf("com.samsung.android.dialer"),
