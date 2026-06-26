@@ -131,6 +131,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var currentGuideStep = GuideStep.NONE
     private var mediaType: String? = null // "사진" or "동영상"
     private var llmJob: Job? = null
+    private var appLaunchGuardJob: Job? = null // 앱 실행 과도기 가드 타임아웃 보험용 Job
     private var testReceiver: android.content.BroadcastReceiver? = null
     private var lastInputText: String? = null
     private var lastInputTime: Long = 0L
@@ -784,6 +785,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
+            // 앱 실행 과도기 중 진짜 화면 전환(WINDOW_STATE_CHANGED)이 오면 그때 가드 해제 후 분석 시작
+            if (uiChangeDetector?.isAppLaunching == true &&
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                val pkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                Log.d(TAG, "[디버그] 앱 실행 과도기 중 화면 전환 감지 → 가드 해제 (pkg=$pkg)")
+                releaseAppLaunchGuard(pkg)
+                return  // 이 이벤트는 가드 해제로 소비, 아래 일반 처리로 흘리지 않음
+            }
             // 포그라운드 패키지가 변경되었는지 감지하기 위해 즉시 패키지명 업데이트 시도
             val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
             if (currentPkg.isNotBlank()) {
@@ -1038,30 +1047,45 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun startGuideFlow(command: String, packageName: String) {
-        // reset() 은 호출하지 않는다.
-        // 이유: reset() 을 하면 UiChangeDetector 가 isFirstRun 상태가 되어 로딩바 폴링/debounce 를 건너뛰고
-        //       즉시 분석을 실행해버린다. reset() 을 생략하면 직전 화면(홈)과 새 화면(앱)을 Jaccard 로 비교해
-        //       정상적으로 화면 전환을 감지하고 로딩바가 사라질 때까지 대기한 뒤 호출하게 된다.
-        uiChangeDetector?.isAppLaunching = true   // 앱 스플래시 과도기 동안만 이벤트 무시
+        // reset() 은 호출하지 않는다. (UiChangeDetector 가 isFirstRun 으로 빠지면
+        //  로딩바 폴링/debounce 를 건너뛰고 즉시 분석해버리므로)
+        uiChangeDetector?.isAppLaunching = true   // 앱 실행 과도기 동안 이벤트 폭주 차단
         guideOrchestrator?.startGuide(command, packageName)
 
-        guideScope.launch {
-            // 앱이 떠서 첫 화면 트리가 올라올 최소 시간만 짧게 보호 (고정 1.2초 → 600ms)
-            delay(600)
-            uiChangeDetector?.isAppLaunching = false
-
-            // 킥스타트: 현재 화면을 감지기에 직접 투입해 안정 판단을 시작시킨다.
-            // 이후 로딩바가 사라지고 화면이 안정되면 onMeaningfulChange → guideOrchestrator.onUiChanged 가 자동 호출된다.
-            val initialUiTree = extractScreenTree()
-            Log.d(TAG, "[디버그] 가이드 시작 후 화면 안정 감지에 위임합니다.")
-            uiChangeDetector?.onNewUiTree(
-                uiTreeJson = initialUiTree,
-                scope = guideScope,
-                eventType = 32,        // TYPE_WINDOW_STATE_CHANGED 로 취급
-                screenHeight = resources.displayMetrics.heightPixels,
-                immediate = false      // 즉시 쏘지 않고 로딩바 폴링/debounce 를 거치게 함
-            )
+        // 고정 시간 대기(delay 600/1200)는 제거한다.
+        // 대신 onAccessibilityEvent 에서 TYPE_WINDOW_STATE_CHANGED(32) 이벤트가 오면
+        // 그때 가드를 풀고 분석을 시작한다 (releaseAppLaunchGuard()).
+        //
+        // 안전장치: 32 이벤트가 끝내 오지 않는 앱을 대비해 최대 3초 후 강제로 가드를 푼다.
+        appLaunchGuardJob?.cancel()
+        appLaunchGuardJob = guideScope.launch {
+            delay(3000)
+            if (uiChangeDetector?.isAppLaunching == true) {
+                Log.d(TAG, "[디버그] 앱 실행 가드 타임아웃(3초) — 화면 전환 이벤트 없이 강제 해제")
+                releaseAppLaunchGuard(packageName)
+            }
         }
+    }
+
+    /**
+     * 앱 실행 과도기 가드를 풀고, 현재 화면을 감지기에 투입해 분석을 시작시킨다.
+     * 중복 호출돼도 1회만 동작하도록 isAppLaunching 플래그로 가드한다.
+     */
+    private fun releaseAppLaunchGuard(packageName: String) {
+        if (uiChangeDetector?.isAppLaunching != true) return  // 이미 풀렸으면 무시
+        appLaunchGuardJob?.cancel()
+        appLaunchGuardJob = null
+        uiChangeDetector?.isAppLaunching = false
+
+        val initialUiTree = extractScreenTree()
+        Log.d(TAG, "[디버그] 앱 실행 가드 해제 → 화면 안정 감지에 위임")
+        uiChangeDetector?.onNewUiTree(
+            uiTreeJson = initialUiTree,
+            scope = guideScope,
+            eventType = 32,        // 화면 전환으로 취급
+            screenHeight = resources.displayMetrics.heightPixels,
+            immediate = false      // 로딩바 폴링/debounce 거치게 함
+        )
     }
 
     private fun processLocalCommand(command: String): Boolean {
@@ -1562,6 +1586,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         guideOrchestrator?.destroy()
         uiChangeDetector?.destroy()
         serviceJob.cancel()
+        appLaunchGuardJob?.cancel()
         testReceiver?.let {
             try {
                 unregisterReceiver(it)
