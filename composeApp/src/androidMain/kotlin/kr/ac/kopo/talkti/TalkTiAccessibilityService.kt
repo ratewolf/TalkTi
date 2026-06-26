@@ -208,6 +208,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
             uiChangeDetector?.reset()
         }
 
+        guideOrchestrator?.onGuideComplete = {
+            Log.d(TAG, "[디버그] Guide COMPLETE 통지 수신 → 세션 및 화면 감지 완전 종료")
+            agentSessionManager.endSession()
+            uiChangeDetector?.reset()
+            removeTargetHighlight()
+        }
+
         uiChangeDetector?.onMeaningfulChange = {
             removeTargetHighlight()
             val orchestrator = guideOrchestrator

@@ -119,6 +119,9 @@ class GuideOrchestrator(
     /** 가이드 종료 시 호출되는 콜백 */
     var onStopGuide: (() -> Unit)? = null
 
+    /** COMPLETE 상태 진입 즉시 호출되는 콜백 (세션 완전 종료용) */
+    var onGuideComplete: (() -> Unit)? = null
+
     /**
      * 가이드를 종료하고 상태를 초기화한다.
      */
@@ -297,13 +300,18 @@ class GuideOrchestrator(
             GuideState.COMPLETE -> {
                 candidateOverlayManager.clearOverlays()
                 actionButtonOverlayManager.clearHighlight()
-                speakTts("안내가 완료되었습니다.")
+                speakTts("안내를 시작합니다.")
 
                 guideEnabled = false
                 currentState = GuideState.COMPLETE
                 isPendingStop = true
 
-                Log.d(TAG, "[디버그] Guide 완료 상태 진입 (정리 예약)")
+                // COMPLETE 진입 즉시 서비스에 완전 종료를 알린다.
+                // (TTS 완료를 기다리는 isPendingStop 경로와 별개로, 세션을 곧바로 꺼서
+                //  화면 변경으로 인한 좀비 분석 재실행을 차단한다.)
+                onGuideComplete?.invoke()
+
+                Log.d(TAG, "[디버그] Guide 완료 상태 진입 (정리 예약 + 즉시 세션 종료 통지)")
 
                 return
             }
