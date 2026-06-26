@@ -669,8 +669,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val rect = Rect()
                         searchButton.getBoundsInScreen(rect)
                         val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                        showTargetHighlight(bounds, Color.RED)
+                        showTargetHighlight(bounds, Color.RED, skipOptimize = true)
                         speakTts("돋보기 모양 검색 버튼을 눌러주세요.")
                     }
                 }
@@ -719,8 +718,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val rect = Rect()
                         chatMenuButton.getBoundsInScreen(rect)
                         val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                        showTargetHighlight(bounds, Color.RED)
+                        showTargetHighlight(bounds, Color.RED, skipOptimize = true)
                         speakTts("입력창 왼쪽의 플러스 버튼을 눌러주세요.")
                     }
                 }
@@ -736,9 +734,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val rect = Rect()
                         mediaButton.getBoundsInScreen(rect)
                         val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
                         val typeKorean = if (mediaType == "동영상") "동영상" else "사진"
-                        showTargetHighlight(bounds, Color.RED)
+                        showTargetHighlight(bounds, Color.RED, skipOptimize = true)
                         speakTts("$typeKorean 전송을 위해 앨범 버튼을 눌러주세요.")
                     }
                 }
@@ -1622,8 +1619,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return Json.encodeToString(elements)
     }
 
-    private fun showTargetHighlight(bounds: RectDto, color: Int = Color.RED, keepInfinite: Boolean = false) {
-        val optimizedBounds = findOptimizedBounds(bounds)
+    private fun showTargetHighlight(bounds: RectDto, color: Int = Color.RED, keepInfinite: Boolean = false, skipOptimize: Boolean = false) {
+        val optimizedBounds = if (skipOptimize) bounds else findOptimizedBounds(bounds)
         Log.d(TAG, "showTargetHighlight: original=$bounds, optimized=$optimizedBounds, color=$color")
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
