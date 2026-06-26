@@ -218,6 +218,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
             removeTargetHighlight()
         }
 
+        LlmLoadingOverlay.onLongPress = {
+            Log.d(TAG, "[디버그] 로딩창 길게 누름 감지 → 취소 확인 다이얼로그 표시")
+            showLoadingCancelDialog()
+        }
+
         uiChangeDetector?.onMeaningfulChange = {
             removeTargetHighlight()
             val orchestrator = guideOrchestrator
@@ -307,16 +312,51 @@ class TalkTiAccessibilityService : AccessibilityService() {
         dialog.show()
     }
 
+    /**
+     * 진행 중인 LLM 요청/세션을 취소하고 로딩창을 닫아 요청 전 초기 상태로 되돌린다.
+     */
+    private fun cancelOngoingRequest() {
+        llmJob?.cancel()
+        llmJob = null
+        guideOrchestrator?.cancelActiveAnalysis()
+        guideOrchestrator?.stopGuide()
+        agentSessionManager.endSession()
+        uiChangeDetector?.reset()
+        isAwaitingUserAnswer = false
+        pendingCommand = null
+        currentGuideStep = GuideStep.NONE
+        LlmLoadingOverlay.hide()
+        floatingMenuManager?.updateLoadingStatus(false)
+        removeTargetHighlight()
+        candidateOverlayManager?.clearOverlays()
+        actionButtonOverlayManager?.clearHighlight()
+        speakTts("요청을 취소했습니다.")
+    }
+
+    /**
+     * 로딩창을 길게 눌렀을 때 "취소하시겠어요?" 확인 다이얼로그를 띄운다.
+     */
+    private fun showLoadingCancelDialog() {
+        // 로딩 중이 아닐 땐 무시
+        if (!LlmLoadingOverlay.isShowing) return
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("요청 취소")
+            .setMessage("진행 중인 요청을 취소하시겠어요?")
+            .setPositiveButton("취소하기") { _, _ ->
+                cancelOngoingRequest()
+            }
+            .setNegativeButton("계속", null)
+            .create()
+
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
+    }
+
     private fun startAppGuide() {
         // [추가] LLM 대기 중 버튼 누르면 취소 처리
         if (LlmLoadingOverlay.isShowing) {
-            llmJob?.cancel()
-            llmJob = null
-            LlmLoadingOverlay.hide()
-            floatingMenuManager?.updateLoadingStatus(false)
-            agentSessionManager.endSession()
-            removeTargetHighlight()
-            speakTts("요청을 취소했습니다.")
+            cancelOngoingRequest()
             return
         }
 
@@ -1601,6 +1641,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         uiChangeDetector?.destroy()
         serviceJob.cancel()
         appLaunchGuardJob?.cancel()
+        LlmLoadingOverlay.onLongPress = null
         testReceiver?.let {
             try {
                 unregisterReceiver(it)
