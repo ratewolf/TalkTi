@@ -137,6 +137,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var testReceiver: android.content.BroadcastReceiver? = null
     private var lastInputText: String? = null
     private var lastInputTime: Long = 0L
+    // captureScreenForLLM 중복 호출 차단용
+    private var lastCaptureCommand: String? = null
+    private var lastCaptureTime: Long = 0L
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -1210,6 +1213,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
 
     fun captureScreenForLLM(userCommand: String) {
+        // 중복 전송 차단: 같은 명령이 2초 이내에 다시 들어오면 무시
+        // (onResults 와 onMeaningfulChange 가 첫 명령 직후 거의 동시에 호출되는 경쟁 조건 방지)
+        val now = System.currentTimeMillis()
+        if (userCommand == lastCaptureCommand && now - lastCaptureTime < 2000) {
+            Log.d(TAG, "[디버그] captureScreenForLLM 중복 호출 차단: '$userCommand' (${now - lastCaptureTime}ms 전 동일 명령)")
+            return
+        }
+        lastCaptureCommand = userCommand
+        lastCaptureTime = now
+
         removeTargetHighlight()
         showLlmLoading()
 
