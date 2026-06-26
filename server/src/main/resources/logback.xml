@@ -4,24 +4,8 @@
             <pattern>%d{YYYY-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
-
-    <!-- 실시간 로그를 텍스트 파일로 기록하는 설정 (logs/talkti-server.log) -->
-    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>logs/talkti-server.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <!-- 매일 자정에 새로운 로그 파일로 교체하며 이전 로그는 압축 저장 -->
-            <fileNamePattern>logs/talkti-server.%d{yyyy-MM-dd}.log.zip</fileNamePattern>
-            <!-- 로그 보관 기간: 최대 30일 -->
-            <maxHistory>30</maxHistory>
-        </rollingPolicy>
-        <encoder>
-            <pattern>%d{YYYY-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
-
     <root level="trace">
         <appender-ref ref="STDOUT"/>
-        <appender-ref ref="FILE"/> <!-- 파일 저장 활성화 -->
     </root>
     <logger name="org.eclipse.jetty" level="INFO"/>
     <logger name="io.netty" level="INFO"/>
