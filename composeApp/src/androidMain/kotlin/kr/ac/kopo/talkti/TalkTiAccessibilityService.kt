@@ -140,6 +140,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     // captureScreenForLLM 중복 호출 차단용
     private var lastCaptureCommand: String? = null
     private var lastCaptureTime: Long = 0L
+    // 사용자 답변(ASK_USER 응답 등)을 전송하는 동안, 화면 변경에 의한 job 취소/자동 재캡처를 막는 보호 플래그
+    private var isSendingUserAnswer: Boolean = false
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -183,8 +185,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 candidateOverlayManager?.clearOverlays()
                 actionButtonOverlayManager?.clearHighlight()
                 guideOrchestrator?.cancelActiveAnalysis()
-                llmJob?.cancel()
-                llmJob = null
+                if (!isSendingUserAnswer) {
+                    llmJob?.cancel()
+                    llmJob = null
+                } else {
+                    Log.d(TAG, "[디버그] 사용자 답변 전송 중 -> llmJob 취소 건너뜀")
+                }
             }
         }
 
@@ -237,9 +243,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
                 orchestrator.onUiChanged(latestUiTreeJson, guideScope)
             } else if (agentSessionManager.isActive) {
-                if (isAwaitingUserAnswer) {
-                    // ASK_USER 되물음 후 사용자 답변 대기 중 — 화면이 바뀌어도 원래 명령을 자동 재전송하지 않는다.
-                    Log.d(TAG, "[디버그] 사용자 답변 대기 중 -> 자동 재캡처 건너뜀")
+                if (isAwaitingUserAnswer || isSendingUserAnswer) {
+                    Log.d(TAG, "[디버그] 답변 대기/전송 중 -> 자동 재캡처 건너뜀")
                 } else {
                     Log.d(TAG, "[디버그] 대화 세션 중 의미 있는 화면 전환 감지 -> 캡처 전송")
                     val currentGoal = agentSessionManager.currentGoal
@@ -1223,6 +1228,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         lastCaptureCommand = userCommand
         lastCaptureTime = now
 
+        isSendingUserAnswer = true
+
         removeTargetHighlight()
         showLlmLoading()
 
@@ -1324,6 +1331,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
+                    isSendingUserAnswer = false
                     floatingMenuManager?.updateLoadingStatus(false)
                     
                     if (response.actionType == "FINISH") {
@@ -1406,12 +1414,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     }
                 }
             } catch (e: Exception) {
+                isSendingUserAnswer = false
                 Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
                 withContext(Dispatchers.Main) {
                     floatingMenuManager?.updateLoadingStatus(false)
                     Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             } finally {
+                isSendingUserAnswer = false
                 withContext(Dispatchers.Main) {
                     if (!keepLoadingOverlay) {
                         floatingMenuManager?.updateLoadingStatus(false)
