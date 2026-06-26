@@ -54,10 +54,11 @@ object LlmLoadingOverlay {
         val characterImageView = ImageView(context).apply {
             setImageResource(R.drawable.loading_character)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            val width = dpToPx(context, 120f).toInt()
-            val height = dpToPx(context, 80f).toInt()
-            layoutParams = LinearLayout.LayoutParams(width, height).apply {
-                bottomMargin = dpToPx(context, 24f).toInt()
+            adjustViewBounds = true
+
+            val size = dpToPx(context, 250f).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                bottomMargin = dpToPx(context, 20f).toInt()
             }
         }
         cardLayout.addView(characterImageView)
