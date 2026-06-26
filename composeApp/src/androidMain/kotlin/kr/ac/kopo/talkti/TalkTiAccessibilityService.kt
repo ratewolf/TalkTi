@@ -74,7 +74,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         private const val TAG = "TalkTiService"
     }
 
-    // 음성 선택 시스템 준비
+    // 음성 선택 시스템
     private val selectionManager = SelectionConversationManager()
     private val promptBuilder = SelectionPromptBuilder()
     private val candidateExtractor = CandidateExtractor()
@@ -1031,17 +1031,29 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun startGuideFlow(command: String, packageName: String) {
-        uiChangeDetector?.reset()
-        uiChangeDetector?.isAppLaunching = true // 앱 런치 과도기 이벤트 무시 설정
+        // reset() 은 호출하지 않는다.
+        // 이유: reset() 을 하면 UiChangeDetector 가 isFirstRun 상태가 되어 로딩바 폴링/debounce 를 건너뛰고
+        //       즉시 분석을 실행해버린다. reset() 을 생략하면 직전 화면(홈)과 새 화면(앱)을 Jaccard 로 비교해
+        //       정상적으로 화면 전환을 감지하고 로딩바가 사라질 때까지 대기한 뒤 호출하게 된다.
+        uiChangeDetector?.isAppLaunching = true   // 앱 스플래시 과도기 동안만 이벤트 무시
         guideOrchestrator?.startGuide(command, packageName)
-        
-        // 가이드 시작 후 앱이 로딩되고 화면이 완전히 그려질 시간을 확보하기 위해 약간 지연 후 분석 실행 (3초 지연 현상 방지)
+
         guideScope.launch {
-            delay(1200) // 1.2초 대기하여 카카오맵 검색 결과 등이 뜰 때까지 대기
-            uiChangeDetector?.isAppLaunching = false // 앱 런치 과도기 완료
+            // 앱이 떠서 첫 화면 트리가 올라올 최소 시간만 짧게 보호 (고정 1.2초 → 600ms)
+            delay(600)
+            uiChangeDetector?.isAppLaunching = false
+
+            // 킥스타트: 현재 화면을 감지기에 직접 투입해 안정 판단을 시작시킨다.
+            // 이후 로딩바가 사라지고 화면이 안정되면 onMeaningfulChange → guideOrchestrator.onUiChanged 가 자동 호출된다.
             val initialUiTree = extractScreenTree()
-            Log.d(TAG, "[디버그] 가이드 시작 후 지연 분석을 실행합니다.")
-            guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
+            Log.d(TAG, "[디버그] 가이드 시작 후 화면 안정 감지에 위임합니다.")
+            uiChangeDetector?.onNewUiTree(
+                uiTreeJson = initialUiTree,
+                scope = guideScope,
+                eventType = 32,        // TYPE_WINDOW_STATE_CHANGED 로 취급
+                screenHeight = resources.displayMetrics.heightPixels,
+                immediate = false      // 즉시 쏘지 않고 로딩바 폴링/debounce 를 거치게 함
+            )
         }
     }
 
@@ -1256,7 +1268,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                     val finalGoal = agentSessionManager.currentGoal ?: command
                                     errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
                                     startGuideFlow(finalGoal, launchedPkg)
-                                    keepLoadingOverlay = true
+                                    keepLoadingOverlay = false
                                 }
                             }
                         }
