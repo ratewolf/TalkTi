@@ -132,6 +132,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private var mediaType: String? = null // "사진" or "동영상"
     private var llmJob: Job? = null
     private var appLaunchGuardJob: Job? = null // 앱 실행 과도기 가드 타임아웃 보험용 Job
+    // ASK_USER(되물음) 후 사용자 답변을 기다리는 동안 자동 재캡처를 막는 플래그
+    private var isAwaitingUserAnswer: Boolean = false
     private var testReceiver: android.content.BroadcastReceiver? = null
     private var lastInputText: String? = null
     private var lastInputTime: Long = 0L
@@ -227,11 +229,16 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
                 orchestrator.onUiChanged(latestUiTreeJson, guideScope)
             } else if (agentSessionManager.isActive) {
-                Log.d(TAG, "[디버그] 대화 세션 중 의미 있는 화면 전환 감지 -> 캡처 전송")
-                val currentGoal = agentSessionManager.currentGoal
-                if (currentGoal != null) {
-                    if (agentSessionManager.canCapture(1500)) { // 대중교통 등 빠른 탐색을 위해 1.5초 쿨다운으로 보정
-                        captureScreenForLLM(currentGoal)
+                if (isAwaitingUserAnswer) {
+                    // ASK_USER 되물음 후 사용자 답변 대기 중 — 화면이 바뀌어도 원래 명령을 자동 재전송하지 않는다.
+                    Log.d(TAG, "[디버그] 사용자 답변 대기 중 -> 자동 재캡처 건너뜀")
+                } else {
+                    Log.d(TAG, "[디버그] 대화 세션 중 의미 있는 화면 전환 감지 -> 캡처 전송")
+                    val currentGoal = agentSessionManager.currentGoal
+                    if (currentGoal != null) {
+                        if (agentSessionManager.canCapture(1500)) {
+                            captureScreenForLLM(currentGoal)
+                        }
                     }
                 }
             }
@@ -333,6 +340,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .setPositiveButton("확인") { _, _ ->
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
+                    // 사용자가 답변/명령을 발화했으므로 대기 모드 해제
+                    isAwaitingUserAnswer = false
                     if (!processLocalCommand(command)) {
                         if (!agentSessionManager.isActive) {
                             agentSessionManager.startSession(command)
@@ -364,6 +373,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         val userCommand = matches[0]
+                        // 사용자가 답변/명령을 발화했으므로 대기 모드 해제
+                        isAwaitingUserAnswer = false
 
                         val currentFlow = selectionManager.currentFlow
                         if (currentFlow is SelectionFlow.Presenting || currentFlow is SelectionFlow.AwaitingVoice) {
@@ -1270,6 +1281,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
+                    // ASK_USER(되물음)이면 사용자 답변 대기 모드로 전환하여 자동 재캡처를 멈춘다.
+                    // 그 외 액션(OPEN_APP/CLICK 등)이면 대기 해제.
+                    isAwaitingUserAnswer = (response.actionType == "ASK_USER")
                     speakTts(response.ttsMessage, utteranceId)
 
                     // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
