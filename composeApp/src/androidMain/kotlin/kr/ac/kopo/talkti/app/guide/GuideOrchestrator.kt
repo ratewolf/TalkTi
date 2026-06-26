@@ -69,8 +69,10 @@ class GuideOrchestrator(
     /** 분석 중 여부 (중복 요청 방지) */
     private var isAnalyzing: Boolean = false
         set(value) {
-            field = value
-            onAnalyzeStateChanged?.invoke(value)
+            if (field != value) {
+                field = value
+                onAnalyzeStateChanged?.invoke(value)
+            }
         }
 
     /** 분석 코루틴 Job */
@@ -151,22 +153,37 @@ class GuideOrchestrator(
      * @param uiTreeJson 현재 화면의 UI Tree JSON
      * @param scope 코루틴 스코프
      */
+    /**
+     * 현재 실행 중인 비동기 분석 작업을 취소하고 오버레이를 지운다.
+     */
+    fun cancelActiveAnalysis() {
+        Log.d(TAG, "[디버그] 가이드 분석 작업 즉시 강제 취소 (cancelActiveAnalysis)")
+        guideGeneration++
+        analyzeJob?.cancel()
+        analyzeJob = null
+        isAnalyzing = false
+        // 분석 진행 여부와 무관하게 항상 오버레이 즉시 제거 (화면 전환 시 잔류 방지)
+        candidateOverlayManager.clearOverlays()
+        actionButtonOverlayManager.clearHighlight()
+    }
+
     fun onUiChanged(uiTreeJson: String, scope: CoroutineScope) {
         if (!isActive) {
             Log.d(TAG, "[디버그] Guide 비활성 상태이므로 분석을 건너뜁니다.")
             return
         }
-        if (isAnalyzing) {
-            Log.d(TAG, "[디버그] UI 변경 이벤트 감지되었으나 이미 분석 중이므로 요청을 생략합니다.")
-            return
+
+        // 이전 분석 작업이 돌고 있다면 즉시 취소
+        if (isAnalyzing || analyzeJob != null) {
+            Log.d(TAG, "[디버그] 새로운 UI 변경 발생 → 진행 중인 이전 분석 강제 취소")
+            analyzeJob?.cancel()
         }
 
         Log.d(TAG, "[디버그] UI 변경 감지 → 분석 프로세스 시작 (isActive=$isActive, userCommand='$userCommand')")
         isAnalyzing = true
 
         val currentGen = guideGeneration
-        analyzeJob?.cancel()
-        analyzeJob = scope.launch(Dispatchers.IO) {
+        analyzeJob = scope.launch {
             try {
                 val request = GuideScreenRequest(
                     userCommand = userCommand,
@@ -193,6 +210,9 @@ class GuideOrchestrator(
                     }
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) {
+                    throw e
+                }
                 Log.e(TAG, "[디버그] 서버 분석 에러 발생: ${e.message}")
                 withContext(Dispatchers.Main) {
                     if (currentGen == guideGeneration) {
@@ -202,7 +222,8 @@ class GuideOrchestrator(
                     }
                 }
             } finally {
-                if (currentGen == guideGeneration) {
+                // 레이스 컨디션을 막기 위해, 현재 종료되는 코루틴이 가장 최신의 분석 코루틴인 경우에만 잠금 해제
+                if (analyzeJob == coroutineContext[Job]) {
                     isAnalyzing = false
                     Log.d(TAG, "[디버그] 분석 프로세스 종료 (isAnalyzing = false, gen=$currentGen)")
                 }
@@ -230,7 +251,11 @@ class GuideOrchestrator(
 
         // 타겟 좌표 최적화 적용 (실제 클릭 가능한 컨테이너 영역으로 매핑)
         val optimizedTargets = response.targets.map { target ->
-            val optBounds = TalkTiAccessibilityService.instance?.findOptimizedBounds(target.bounds) ?: target.bounds
+            val optBounds = if (newState == GuideState.SELECT_TARGET || newState == GuideState.SELECT_OPTION) {
+                TalkTiAccessibilityService.instance?.findOptimizedBounds(target.bounds) ?: target.bounds
+            } else {
+                target.bounds // 버튼 클릭 안내(PRESS_ACTION/CONFIRM)일 때는 강제 확장하지 않고 원래 버튼 크기 유지
+            }
             GuideTarget(
                 candidateId = target.candidateId,
                 text = target.text,
@@ -257,12 +282,17 @@ class GuideOrchestrator(
         candidateOverlayManager.clearOverlays()
         actionButtonOverlayManager.clearHighlight()
 
+        val actionArgs = response.actionArguments
+        val isSetTextAction = response.actionType == "ACTION_SET_TEXT" && !actionArgs.isNullOrBlank()
+
         when (newState) {
             GuideState.SELECT_TARGET, GuideState.SELECT_OPTION -> {
                 showCandidateOverlays(optimizedTargets)
             }
-            GuideState.PRESS_ACTION, GuideState.CONFIRM -> {
-                showActionOverlay(optimizedTargets)
+            GuideState.PRESS_ACTION, GuideState.PRESS_ACTION_EDIT_TEXT, GuideState.CONFIRM -> {
+                if (!isSetTextAction) {
+                    showActionOverlay(optimizedTargets)
+                }
             }
             GuideState.COMPLETE -> {
                 candidateOverlayManager.clearOverlays()
@@ -281,6 +311,42 @@ class GuideOrchestrator(
                 // 할 일 없음
             }
         }
+
+        // 자동 텍스트 입력 액션 실행
+        if (isSetTextAction) {
+            Log.d(TAG, "[디버그] 가이드 흐름 자동 텍스트 입력 실행 예약 (Silent): $actionArgs")
+            val targetBounds = optimizedTargets.firstOrNull()?.bounds
+                ?: RectDto(0, 0, 0, 0)
+            CoroutineScope(Dispatchers.Main).launch {
+                delay(300) // 안정화 대기
+                val service = TalkTiAccessibilityService.instance
+                val success = service?.performImmediateActionSetText(targetBounds, actionArgs!!)
+                Log.d(TAG, "[디버그] 가이드 흐름 자동 텍스트 입력 결과: success=$success")
+                if (success == true) {
+                    // Kakao T 실시간 장소 리스트가 렌더링될 때까지 대기
+                    // 300ms씩 최대 4번(1.2초) 대기하면서 클릭 가능 후보 3개 이상이면 렌더 완료로 판단
+                    var placeListReady = false
+                    repeat(4) { attempt ->
+                        if (!placeListReady) {
+                            delay(300)
+                            val tree = service.extractScreenTree()
+                            val candidates = try {
+                                kotlinx.serialization.json.Json.decodeFromString<List<kr.ac.kopo.talkti.models.UiElement>>(tree)
+                                    .count { it.clickable && it.visibleToUser && it.enabled }
+                            } catch (e: Exception) { 0 }
+                            Log.d(TAG, "[디버그] 장소 리스트 렌더 대기 (${attempt + 1}/4): 클릭 가능 후보 $candidates 개")
+                            if (candidates >= 3) {
+                                placeListReady = true
+                            }
+                        }
+                    }
+                    Log.d(TAG, "[디버그] 자동 입력 완료 → 후속 분석 트리거 (placeListReady=$placeListReady)")
+                    val newTree = service.extractScreenTree()
+                    onUiChanged(newTree, service.guideScope)
+                }
+            }
+        }
+
 
         // TTS 안내 (동일 타겟/상태면 스킵하여 안내 중복 방지)
         if (response.tts.isNotBlank()) {
@@ -393,16 +459,19 @@ class GuideOrchestrator(
     private fun showCandidateOverlays(targets: List<GuideTarget>) {
         if (targets.isEmpty()) return
 
+        val service = TalkTiAccessibilityService.instance
         val candidates = targets.mapNotNull { t ->
             val b = t.bounds
             if (b.left >= b.right || b.top >= b.bottom) {
                 Log.w(TAG, "[디버그] 유효하지 않은 candidate bounds 발견하여 스킵: text=${t.text}, bounds=[l=${b.left}, t=${b.top}, r=${b.right}, b=${b.bottom}]")
                 null
             } else {
+                // 하나의 큰 bounds 안에 여러 클릭 요소가 있으면 타겟 텍스트에 맞게 좁힘
+                val tightBounds = service?.shrinkBoundsIfMultipleElements(b, t.text) ?: b
                 Candidate(
                     id = t.candidateId,
                     text = t.text,
-                    bounds = b
+                    bounds = tightBounds
                 )
             }
         }
@@ -429,9 +498,14 @@ class GuideOrchestrator(
             return
         }
 
-        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, bounds=$b")
+        // 하나의 큰 bounds 안에 여러 클릭 요소가 있으면 타겟 텍스트에 맞게 좁힘
+        // (예: 카카오톡 '+' 버튼 bounds가 하단 입력 바 전체를 덮는 경우)
+        val service = TalkTiAccessibilityService.instance
+        val tightBounds = service?.shrinkBoundsIfMultipleElements(b, first.text) ?: b
+
+        Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, 원본=${b}, 최종=${tightBounds}")
         actionButtonOverlayManager.showActionButtonHighlight(
-            b,
+            tightBounds,
             first.text
         )
     }

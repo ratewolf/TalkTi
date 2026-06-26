@@ -13,7 +13,8 @@ class ActionTargetFinder {
         "확인",
         "예약",
         "다음",
-        "계속"
+        "계속",
+        "호출"
     )
 
     fun findPrimaryAction(
@@ -33,8 +34,8 @@ class ActionTargetFinder {
                     ""
             }
 
-            targetText in primaryActionKeywords &&
-                    element.clickable &&
+            primaryActionKeywords.any { targetText.contains(it) } &&
+                    (element.clickable || element.className.contains("TextView") || element.className.contains("Button")) &&
                     element.enabled &&
                     element.visibleToUser
 

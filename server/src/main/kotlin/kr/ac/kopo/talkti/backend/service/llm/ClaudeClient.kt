@@ -30,6 +30,7 @@ class ClaudeClient(
     private data class ClaudeRequest(
         val model: String,
         val max_tokens: Int = 1024,
+        val temperature: Double = 0.2,
         val messages: List<ClaudeMessage>
     )
 
