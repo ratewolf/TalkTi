@@ -1353,7 +1353,11 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val targetBounds = response.targetBounds
                     if (targetBounds != null) {
                         val keepInfinite = (response.actionType == "GUIDE" || response.actionType == "ASK_USER")
-                        showTargetHighlight(targetBounds, highlightColor, keepInfinite)
+                        // CLICK 같은 단일 액션 버튼은 서버가 준 좌표가 이미 정확하므로 좌표 보정(findOptimizedBounds)을 건너뛴다.
+                        // (가장자리 버튼이 옆 버튼 좌표로 흘러 오른쪽으로 치우치는 문제 방지)
+                        // GUIDE(목록)/ASK_USER 는 기존대로 보정을 적용한다.
+                        val skipOpt = (response.actionType == "CLICK")
+                        showTargetHighlight(targetBounds, highlightColor, keepInfinite, skipOptimize = skipOpt)
                     } else {
                         removeTargetHighlight()
                     }

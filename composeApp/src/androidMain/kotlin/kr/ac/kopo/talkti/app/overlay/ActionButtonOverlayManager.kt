@@ -69,13 +69,17 @@ class ActionButtonOverlayManager(
         // ────────────────────────────────────────────────
 
 
+        // 서버가 준 버튼 좌표를 그대로 사용한다.
+        // (기존의 최소 60dp/36dp 강제는 좁은 버튼을 실제보다 넓게 그려
+        //  오른쪽으로 치우치거나 화면 밖으로 삐져나가는 문제를 일으켰음)
+        // 0 이하 같은 비정상 값만 방지하기 위해 아주 작은 최소값(10dp)만 둔다.
         val buttonWidth =
             (bounds.right - bounds.left)
-                .coerceAtLeast(dp(60))
+                .coerceAtLeast(dp(10))
 
         val buttonHeight =
             (bounds.bottom - bounds.top)
-                .coerceAtLeast(dp(36))
+                .coerceAtLeast(dp(10))
 
         val root = FrameLayout(context).apply {
             isFocusable = false
