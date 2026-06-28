@@ -15,7 +15,8 @@ import kr.ac.kopo.talkti.models.*
 class GuideService(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val nodeParser: UiNodeParser = UiNodeParser(),
-    private val claudeClient: ClaudeClient = ClaudeClient()
+    private val claudeClient: ClaudeClient = ClaudeClient(),
+    private val experienceService: kr.ac.kopo.talkti.backend.experience.ExperienceService = kr.ac.kopo.talkti.backend.experience.ExperienceService()
 ) {
 
     @Serializable
@@ -47,12 +48,16 @@ class GuideService(
         }
         val simplifiedJson = Json.encodeToString(simplifiedElements)
 
+        // 과거 성공 경험 조회
+        val experiencePrompt = experienceService.getExperiencePrompt(request.userCommand)
+
         // 프롬프트 생성
         val prompt = buildGuidePrompt(
             userCommand = request.userCommand,
             uiTreeJson = simplifiedJson,
             packageName = request.packageName,
-            previousState = request.previousState
+            previousState = request.previousState,
+            experiencePrompt = experiencePrompt
         )
 
         println("--- Guide LLM 호출 시작 ---")
@@ -423,7 +428,8 @@ class GuideService(
         userCommand: String,
         uiTreeJson: String,
         packageName: String,
-        previousState: String
+        previousState: String,
+        experiencePrompt: String = ""
     ): String {
         return """
 당신은 어르신의 스마트폰 조작을 돕는 AI 에이전트 '똑띠'입니다.
@@ -508,6 +514,7 @@ class GuideService(
   "actionArguments": "입력할 핵심 키워드" or null
 }
 
+${if (experiencePrompt.isNotBlank()) experiencePrompt else ""}
 [입력 정보]
 사용자 요청: "$userCommand"
 앱 패키지명: $packageName

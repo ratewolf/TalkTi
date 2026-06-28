@@ -23,6 +23,8 @@ dependencies {
     testImplementation(libs.kotlin.testJunit)
     implementation("io.ktor:ktor-server-content-negotiation:3.3.0")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
+    // SQLite
+    implementation("org.xerial:sqlite-jdbc:3.45.3.0")
 }
 
 tasks.withType<JavaExec> {

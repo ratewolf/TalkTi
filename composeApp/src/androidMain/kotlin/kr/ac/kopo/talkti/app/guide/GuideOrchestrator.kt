@@ -316,7 +316,13 @@ class GuideOrchestrator(
                 return
             }
             GuideState.IDLE -> {
-                // 할 일 없음
+                // 서버가 IDLE을 반환했다는 건 더 이상 안내할 것이 없다는 의미
+                // (예: 안내시작 후 내비게이션 화면으로 전환된 경우)
+                // 가이드를 완전히 종료한다.
+                Log.d(TAG, "[디버그] 서버 IDLE 응답 수신 → 가이드 종료")
+                guideEnabled = false
+                isPendingStop = false
+                onGuideComplete?.invoke()
             }
         }
 
