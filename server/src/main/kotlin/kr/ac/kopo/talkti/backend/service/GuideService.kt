@@ -97,7 +97,10 @@ class GuideService(
                         text.isNotBlank() &&
                         !setOf("검색", "뒤로", "닫기", "취소", "현재 위치", "내 위치").any { text.contains(it) } &&
                         c.clickable && c.enabled &&
-                        !c.className.contains("EditText")
+                        !c.className.contains("EditText") &&
+                        !c.className.contains("RecyclerView") &&
+                        !c.className.contains("ListView") &&
+                        !c.className.contains("ScrollView")
                     }.take(5)
 
                     if (placeCandidates.isNotEmpty()) {
