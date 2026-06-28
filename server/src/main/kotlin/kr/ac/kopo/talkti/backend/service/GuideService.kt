@@ -508,12 +508,10 @@ PRESS_ACTION 응답 시 아래 기준으로 actionType을 반드시 설정하라
 - 택시 앱 (카카오T 등):
   * 장소 선택 후 택시 종류 선택은 SELECT_OPTION 이고 택시 종류 목록들을 선택하세요.
   * '호출' 관련 버튼은 PRESS_ACTION 이고 해당 버튼을 선택하세요.
-  * previousState가 "PRESS_ACTION_EDIT_TEXT"도 "PRESS_ACTION"도 아닌 상태에서 화면에 '가고 싶은 곳을 찾아보세요' 또는 목적지 검색 관련 버튼/입력창이 보이면:
+  * 현재 화면에 목적지 검색 입력창(EditText) 또는 '가고 싶은 곳을 찾아보세요' 버튼이 보이고 previousState가 "PRESS_ACTION_EDIT_TEXT"가 아니라면:
     상태를 PRESS_ACTION_EDIT_TEXT로 설정하고 해당 요소를 target으로 지정하며 TTS로 '목적지 검색창을 눌러주세요.'라고 안내하세요. (actionType/actionArguments 설정 안 함)
-  * previousState가 "PRESS_ACTION_EDIT_TEXT"이면 검색 화면이 열린 것이므로 상단 검색창을 한 번 더 탭해야 키보드가 올라옴:
-    상태를 PRESS_ACTION으로 설정하고 상단 검색 입력창을 target으로 지정하며 TTS로 '검색창을 한 번 더 눌러주세요.'라고 안내하세요. (actionType/actionArguments 설정 안 함)
-  * previousState가 "PRESS_ACTION"이고 현재 화면에 키보드가 올라와 있거나 EditText가 포커스된 상태이면 텍스트 자동 입력:
-    상태를 PRESS_ACTION으로 설정하고 actionType="ACTION_SET_TEXT", actionArguments에 목적지 키워드(예: "서울역")를 설정하세요.
+  * previousState가 "PRESS_ACTION_EDIT_TEXT"이면 사용자가 검색창을 탭한 직후이므로 즉시 텍스트 자동 입력:
+    상태를 PRESS_ACTION으로 설정하고 actionType="ACTION_SET_TEXT", actionArguments에 목적지 키워드(예: "서울역")를 설정하세요. target은 화면에서 EditText 또는 검색 입력창으로 지정하세요.
   * 검색창에 텍스트가 입력된 후 아래에 추천 장소 목록이 나타나면, '검색' 버튼이 보이더라도 절대 누르라고 안내하지 말고 즉시 SELECT_TARGET으로 장소 목록을 선택하십시오. (카카오T는 실시간 검색이라 검색 버튼 불필요)
 - 채팅 앱 (카카오톡 등):
   * 채팅방 목록은 SELECT_TARGET 이고 채팅방 목록들을 선택하세요.

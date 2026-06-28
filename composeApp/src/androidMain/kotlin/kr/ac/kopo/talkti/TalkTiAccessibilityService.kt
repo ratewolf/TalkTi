@@ -997,6 +997,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
                 if (launched) return appNameOrPackage
             }
+
             val intent = pm.getLaunchIntentForPackage(appNameOrPackage)
             if (intent != null) {
                 // 기존 태스크를 완전히 지우고 새 태스크로 앱을 처음부터 실행 (실행종료 후 재실행 효과)
@@ -1084,6 +1085,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val launched = launchMapWithDeepLink(installedPackage, searchQuery)
                         if (launched) return installedPackage
                     }
+
                     val intent = pm.getLaunchIntentForPackage(installedPackage)
                     if (intent != null) {
                         // 기존 태스크를 완전히 지우고 새 태스크로 앱을 처음부터 실행 (실행종료 후 재실행 효과)
@@ -1110,6 +1112,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val launched = launchMapWithDeepLink(appInfo.packageName, searchQuery)
                         if (launched) return appInfo.packageName
                     }
+
                     // 기존 태스크를 완전히 지우고 새 태스크로 앱을 처음부터 실행 (실행종료 후 재실행 효과)
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                     startActivity(intent)
@@ -1127,6 +1130,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                packageName == "com.skt.tmap.ku" || 
                packageName == "com.skt.tmap"
     }
+
+
 
     private fun launchMapWithDeepLink(packageName: String, query: String): Boolean {
         return try {
