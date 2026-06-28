@@ -85,6 +85,9 @@ class GuideOrchestrator(
     var currentTargetText: String = ""
         private set
 
+    /** ACTION_SET_TEXT 후속 분석 진행 중 외부 onUiChanged 호출 차단 플래그 */
+    private var isPostSetTextAnalyzing: Boolean = false
+
     /** 마지막 서버 응답의 actionType (FINAL 여부 판단용) */
     var lastActionType: String? = null
         private set
@@ -173,6 +176,7 @@ class GuideOrchestrator(
         actionButtonOverlayManager.clearHighlight()
         guideEnabled = false
         currentTargetText = ""
+        isPostSetTextAnalyzing = false
         lastActionType = null
         isPendingStop = false
 
@@ -208,9 +212,15 @@ class GuideOrchestrator(
         actionButtonOverlayManager.clearHighlight()
     }
 
-    fun onUiChanged(uiTreeJson: String, scope: CoroutineScope) {
+    fun onUiChanged(uiTreeJson: String, scope: CoroutineScope, isManualTrigger: Boolean = false) {
         if (!isActive) {
             Log.d(TAG, "[디버그] Guide 비활성 상태이므로 분석을 건너뜁니다.")
+            return
+        }
+
+        // ACTION_SET_TEXT 후속 분석 진행 중이면 외부 호출 차단
+        if (isPostSetTextAnalyzing && !isManualTrigger) {
+            Log.d(TAG, "[디버그] ACTION_SET_TEXT 후속 분석 진행 중 → 외부 onUiChanged 호출 차단")
             return
         }
 
@@ -410,23 +420,36 @@ class GuideOrchestrator(
                     // Kakao T 실시간 장소 리스트가 렌더링될 때까지 대기
                     // 300ms씩 최대 4번(1.2초) 대기하면서 클릭 가능 후보 3개 이상이면 렌더 완료로 판단
                     var placeListReady = false
-                    repeat(4) { attempt ->
+                    var latestTree = service.extractScreenTree()
+                    repeat(6) { attempt ->
                         if (!placeListReady) {
                             delay(300)
                             val tree = service.extractScreenTree()
-                            val candidates = try {
+                            latestTree = tree
+                            val hasPlaceItems = try {
                                 kotlinx.serialization.json.Json.decodeFromString<List<kr.ac.kopo.talkti.models.UiElement>>(tree)
-                                    .count { it.clickable && it.visibleToUser && it.enabled }
-                            } catch (e: Exception) { 0 }
-                            Log.d(TAG, "[디버그] 장소 리스트 렌더 대기 (${attempt + 1}/4): 클릭 가능 후보 $candidates 개")
-                            if (candidates >= 3) {
+                                    .filter { it.clickable && it.visibleToUser && it.enabled }
+                                    .any { elem ->
+                                        val t = elem.text.trim()
+                                        t.isNotBlank() &&
+                                        !setOf("검색", "뒤로", "닫기", "취소", "홈", "회사", "즐겨찾는 장소 추가").any { t.contains(it) } &&
+                                        t.length >= 2
+                                    }
+                            } catch (e: Exception) { false }
+                            Log.d(TAG, "[디버그] 장소 리스트 렌더 대기 (${attempt + 1}/6): hasPlaceItems=$hasPlaceItems")
+                            if (hasPlaceItems) {
                                 placeListReady = true
                             }
                         }
                     }
                     Log.d(TAG, "[디버그] 자동 입력 완료 → 후속 분석 트리거 (placeListReady=$placeListReady)")
-                    val newTree = service.extractScreenTree()
-                    onUiChanged(newTree, service.guideScope)
+                    isPostSetTextAnalyzing = true
+                    // hasPlaceItems 확인에 쓴 마지막 트리를 재사용 (타이밍 불일치 방지)
+                    val newTree = latestTree
+                    onUiChanged(newTree, service.guideScope, isManualTrigger = true)
+                    // 분석 완료 후 플래그 해제 (2초 후)
+                    delay(2000)
+                    isPostSetTextAnalyzing = false
                 }
             }
         }

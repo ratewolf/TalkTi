@@ -89,7 +89,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     // ── UI 변경 감지 기반 가이드 시스템 ──
     private var guideOrchestrator: GuideOrchestrator? = null
-    private var uiChangeDetector: UiChangeDetector? = null
+    var uiChangeDetector: UiChangeDetector? = null
 
     private val serviceJob = SupervisorJob()
     private val mainScope = CoroutineScope(Dispatchers.Main.immediate + serviceJob)
