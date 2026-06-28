@@ -446,8 +446,13 @@ class GuideService(
 - PRESS_ACTION: 사용자가 특정 버튼을 눌러야 함 (도착, 호출, 전송, 안내 시작, 결제 등)
 - SELECT_OPTION: 사용자가 옵션 중 하나를 선택해야 함 (경로 추천 등)
 - CONFIRM: 사용자가 최종 확인을 해야 함
-- COMPLETE: 가이드 완료
-- IDLE: 사용자가 해야 할 행동 없음
+- COMPLETE: 가이드 완료. 반드시 아래 경우에 COMPLETE를 반환:
+  * 이전 상태가 PRESS_ACTION이었고, 현재 화면이 내비게이션/길안내/경로안내 화면으로 전환된 경우 (안내시작 버튼을 누른 결과)
+  * 이전 상태가 PRESS_ACTION이었고, 택시/배달 호출이 완료된 화면인 경우
+  * 이전 상태가 PRESS_ACTION이었고, 메시지/파일 전송이 완료된 경우
+  * 사용자가 원하는 최종 목표가 완전히 달성된 경우
+  COMPLETE 시 tts는 "안내를 완료했어요." 또는 상황에 맞는 완료 멘트로 설정.
+- IDLE: 현재 화면에서 사용자가 해야 할 행동이 명확하지 않거나, 가이드와 무관한 화면인 경우에만 사용. PRESS_ACTION 다음에는 IDLE 대신 COMPLETE를 우선 고려할 것.
 
 [targets 규칙]
 - SELECT_TARGET / SELECT_OPTION: 선택 가능한 후보의 candidateId 를 최대 10개까지 배열로 반환

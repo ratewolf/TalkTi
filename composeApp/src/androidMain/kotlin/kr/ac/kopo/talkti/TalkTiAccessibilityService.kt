@@ -218,6 +218,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         guideOrchestrator?.onStopGuide = {
             Log.d(TAG, "[디버그] GuideOrchestrator.stopGuide() 감지 → uiChangeDetector.reset() 호출")
             uiChangeDetector?.reset()
+            // 피드백 버튼은 사용자가 직접 누를 때까지 유지
         }
 
         guideOrchestrator?.onGuideComplete = {
@@ -225,6 +226,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             agentSessionManager.endSession()
             uiChangeDetector?.reset()
             removeTargetHighlight()
+            // 피드백 버튼은 사용자가 직접 누를 때까지 유지
         }
 
         LlmLoadingOverlay.onLongPress = {
@@ -299,7 +301,22 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
             },
-            onLongClick = { showTerminationDialog() }
+            onLongClick = { showTerminationDialog() },
+            onSuccessClick = {
+                guideOrchestrator?.recordExperienceResult(success = true)
+                floatingMenuManager?.hideFeedbackButtons()
+                // QUEUE_ADD로 기존 TTS 안 끊고 뒤에 붙여서 재생
+                val params = android.os.Bundle()
+                params.putString(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "feedback_tts")
+                textToSpeech?.speak("성공으로 기록했어요.", android.speech.tts.TextToSpeech.QUEUE_ADD, params, "feedback_tts")
+            },
+            onFailClick = {
+                guideOrchestrator?.recordExperienceResult(success = false)
+                floatingMenuManager?.hideFeedbackButtons()
+                val params = android.os.Bundle()
+                params.putString(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "feedback_tts")
+                textToSpeech?.speak("실패로 기록했어요.", android.speech.tts.TextToSpeech.QUEUE_ADD, params, "feedback_tts")
+            }
         )
         floatingMenuManager?.show()
     }
@@ -1110,6 +1127,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         //  로딩바 폴링/debounce 를 건너뛰고 즉시 분석해버리므로)
         uiChangeDetector?.isAppLaunching = true   // 앱 실행 과도기 동안 이벤트 폭주 차단
         guideOrchestrator?.startGuide(command, packageName)
+        floatingMenuManager?.showFeedbackButtons()
 
         // 고정 시간 대기(delay 600/1200)는 제거한다.
         // 대신 onAccessibilityEvent 에서 TYPE_WINDOW_STATE_CHANGED(32) 이벤트가 오면

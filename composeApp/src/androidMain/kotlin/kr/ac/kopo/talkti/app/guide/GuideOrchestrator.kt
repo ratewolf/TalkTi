@@ -81,6 +81,12 @@ class GuideOrchestrator(
     /** 현재 서버 응답의 타겟 목록 (오버레이 터치 콜백에서 사용) */
     private var currentTargets: List<GuideTarget> = emptyList()
 
+    /** 경험 기반 학습 세션 ID (-1이면 미등록) */
+    private var experienceSessionId: Long = -1L
+
+    /** 현재 세션의 상태 전이 단계 카운터 */
+    private var experienceStep: Int = 0
+
     /**
      * TTS 인스턴스를 설정한다.
      */
@@ -114,6 +120,27 @@ class GuideOrchestrator(
         guideEnabled = true
         isPendingStop = false
         Log.d(TAG, "[디버그] 가이드 활성화 (startGuide - gen=$guideGeneration): command='$command', pkg='$packageName'")
+
+        // 경험 기반 학습 세션 시작
+        experienceSessionId = -1L
+        experienceStep = 0
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response = client.post("$baseUrl/experience/session/start") {
+                    contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
+                    setBody("""{"userCommand": "$command"}""")
+                }
+                val body = response.body<String>()
+                val idMatch = Regex("\"sessionId\"\\s*:\\s*(\\d+)").find(body)
+                if (idMatch != null) {
+                    experienceSessionId = idMatch.groupValues[1].toLong()
+                    Log.d(TAG, "[Experience] 세션 시작됨: id=$experienceSessionId")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "[Experience] 세션 시작 실패 (무시): ${e.message}")
+            }
+        }
     }
 
     /** 가이드 종료 시 호출되는 콜백 */
@@ -138,6 +165,7 @@ class GuideOrchestrator(
         actionButtonOverlayManager.clearHighlight()
         guideEnabled = false
         isPendingStop = false
+
         onStopGuide?.invoke()
         Log.d(TAG, "[디버그] 가이드 비활성화 (stopGuide - gen=$guideGeneration)")
     }
@@ -278,6 +306,35 @@ class GuideOrchestrator(
         }
 
         Log.d(TAG, "[디버그] 가이드 상태 전이: $currentState → $newState, 타겟 개수: ${optimizedTargets.size}")
+
+        // 경험 기반 학습 — 상태 전이 기록
+        val fromStateName = currentState.name
+        val toStateName = newState.name
+        val actionDesc = when (newState) {
+            GuideState.SELECT_TARGET -> "후보 ${optimizedTargets.size}개 표시"
+            GuideState.SELECT_OPTION -> "옵션 ${optimizedTargets.size}개 표시"
+            GuideState.PRESS_ACTION -> "버튼 안내: ${optimizedTargets.firstOrNull()?.text ?: ""}"
+            GuideState.COMPLETE -> "가이드 완료"
+            GuideState.IDLE -> "가이드 종료"
+            else -> newState.name
+        }
+        if (experienceSessionId != -1L) {
+            experienceStep++
+            val stepSnapshot = experienceStep
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    client.post("$baseUrl/experience/transition") {
+                        contentType(ContentType.Application.Json)
+                        header("bypass-tunnel-reminder", "true")
+                        setBody("""{"sessionId": $experienceSessionId, "step": $stepSnapshot, "fromState": "$fromStateName", "toState": "$toStateName", "actionTaken": "$actionDesc"}""")
+                    }
+                    Log.d(TAG, "[Experience] 전이 기록: $fromStateName → $toStateName")
+                } catch (e: Exception) {
+                    Log.w(TAG, "[Experience] 전이 기록 실패 (무시): ${e.message}")
+                }
+            }
+        }
+
         currentState = newState
         currentTargets = optimizedTargets
 
@@ -322,6 +379,7 @@ class GuideOrchestrator(
                 Log.d(TAG, "[디버그] 서버 IDLE 응답 수신 → 가이드 종료")
                 guideEnabled = false
                 isPendingStop = false
+
                 onGuideComplete?.invoke()
             }
         }
@@ -548,6 +606,32 @@ class GuideOrchestrator(
             }
         }
         return false
+    }
+
+    /**
+     * 사용자가 성공/실패 버튼을 눌렀을 때 경험 세션을 완료 처리한다.
+     */
+    fun recordExperienceResult(success: Boolean) {
+        val sessionId = experienceSessionId
+        val steps = experienceStep
+        if (sessionId == -1L) {
+            Log.w(TAG, "[Experience] 기록할 세션 없음 (무시)")
+            return
+        }
+        experienceSessionId = -1L
+        experienceStep = 0
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                client.post("$baseUrl/experience/session/complete") {
+                    contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
+                    setBody("""{"sessionId": $sessionId, "success": $success, "totalSteps": $steps}""")
+                }
+                Log.d(TAG, "[Experience] 세션 완료 기록: id=$sessionId, success=$success, steps=$steps")
+            } catch (e: Exception) {
+                Log.w(TAG, "[Experience] 세션 완료 기록 실패 (무시): ${e.message}")
+            }
+        }
     }
 
     /**
