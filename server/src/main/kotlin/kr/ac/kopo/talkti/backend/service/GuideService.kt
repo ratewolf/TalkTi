@@ -84,55 +84,9 @@ class GuideService(
                     }
                 }
 
-                // 카카오T: PRESS_ACTION이고 검색 버튼 타겟이면 SELECT_TARGET으로 강제 전환
-                val finalTargets = if (
-                    request.packageName == "com.kakao.taxi" &&
-                    llmRes.state == "PRESS_ACTION" &&
-                    request.previousState == "PRESS_ACTION" &&
-                    llmRes.actionType == null
-                ) {
-                    // 검색 버튼이 아닌 실제 장소 목록 후보 추출
-                    val placeCandidates = candidates.filter { c ->
-                        val text = c.text.ifBlank { c.contentDesc }.trim()
-                        text.isNotBlank() &&
-                        !setOf("검색", "뒤로", "닫기", "취소", "현재 위치", "내 위치").any { text.contains(it) } &&
-                        c.clickable && c.enabled &&
-                        !c.className.contains("EditText") &&
-                        !c.className.contains("RecyclerView") &&
-                        !c.className.contains("ListView") &&
-                        !c.className.contains("ScrollView")
-                    }.take(5)
-
-                    if (placeCandidates.isNotEmpty()) {
-                        // 장소 목록이 있으면 SELECT_TARGET으로 강제 전환
-                        return GuideScreenResponse(
-                            state = "SELECT_TARGET",
-                            targets = placeCandidates.map { c ->
-                                GuideTarget(
-                                    candidateId = c.candidateId,
-                                    text = c.text.ifBlank { c.contentDesc },
-                                    bounds = c.bounds
-                                )
-                            },
-                            tts = "가려는 장소를 선택해주세요.",
-                            unchanged = false
-                        )
-                    } else {
-                        // 장소 목록이 없으면 unchanged
-                        return GuideScreenResponse(
-                            state = request.previousState,
-                            targets = emptyList(),
-                            tts = "",
-                            unchanged = true
-                        )
-                    }
-                } else {
-                    targets
-                }
-
                 GuideScreenResponse(
                     state = llmRes.state,
-                    targets = finalTargets,
+                    targets = targets,
                     tts = llmRes.tts,
                     unchanged = llmRes.unchanged,
                     actionType = llmRes.actionType,
