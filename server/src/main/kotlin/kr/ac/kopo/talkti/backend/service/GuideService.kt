@@ -444,6 +444,8 @@ class GuideService(
 [상태 종류]
 - SELECT_TARGET: 사용자가 여러 후보 중 하나를 선택해야 함 (장소 목록, 채팅방 목록, 택시 종류 등)
 - PRESS_ACTION: 사용자가 특정 버튼을 눌러야 함 (도착, 호출, 전송, 안내 시작, 결제 등)
+  * 이 버튼을 누르면 가이드가 완전히 종료되는 최종 버튼(안내시작, 호출, 전송, 결제완료 등)이면 actionType을 "FINAL"로 설정
+  * 이 버튼을 누르면 다음 단계가 있는 중간 버튼(도착, 검색 등)이면 actionType을 null로 설정
 - SELECT_OPTION: 사용자가 옵션 중 하나를 선택해야 함 (경로 추천 등)
 - CONFIRM: 사용자가 최종 확인을 해야 함
 - COMPLETE: 가이드 완료. 반드시 아래 경우에 COMPLETE를 반환:

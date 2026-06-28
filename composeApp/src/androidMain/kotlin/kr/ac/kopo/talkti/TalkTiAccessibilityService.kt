@@ -660,6 +660,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 
                 // 클릭 발생을 UI 변경 감지기에 통지하여 과도기 지연 분석 트리거
                 uiChangeDetector?.notifyClick()
+
+                // PRESS_ACTION + FINAL = 안내시작/호출 같은 최종 버튼 눌림
+                // 즉시 가이드 종료하여 불필요한 LLM 호출 차단
+                if (orchestrator.currentState == kr.ac.kopo.talkti.app.guide.GuideState.PRESS_ACTION &&
+                    orchestrator.lastActionType == "FINAL") {
+                    Log.d(TAG, "[디버그] FINAL 액션 클릭 감지 → 가이드 즉시 종료")
+                    orchestrator.stopGuide()
+                }
             } else {
                 // 가이드 모드가 아닐 때도 항상 정리 및 클릭 통지
                 removeTargetHighlight()

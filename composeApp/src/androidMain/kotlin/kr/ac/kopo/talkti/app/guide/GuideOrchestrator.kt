@@ -81,6 +81,10 @@ class GuideOrchestrator(
     /** 현재 서버 응답의 타겟 목록 (오버레이 터치 콜백에서 사용) */
     private var currentTargets: List<GuideTarget> = emptyList()
 
+    /** 마지막 서버 응답의 actionType (FINAL 여부 판단용) */
+    var lastActionType: String? = null
+        private set
+
     /** 경험 기반 학습 세션 ID (-1이면 미등록) */
     private var experienceSessionId: Long = -1L
 
@@ -164,6 +168,7 @@ class GuideOrchestrator(
         candidateOverlayManager.clearOverlays()
         actionButtonOverlayManager.clearHighlight()
         guideEnabled = false
+        lastActionType = null
         isPendingStop = false
 
         onStopGuide?.invoke()
@@ -336,6 +341,7 @@ class GuideOrchestrator(
         }
 
         currentState = newState
+        lastActionType = response.actionType
         currentTargets = optimizedTargets
 
         // 기존 오버레이 정리 및 재배치 (좌표가 변경되었을 수 있으므로 항상 실행)
