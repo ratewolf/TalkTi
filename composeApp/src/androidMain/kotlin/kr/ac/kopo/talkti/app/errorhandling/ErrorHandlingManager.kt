@@ -154,23 +154,8 @@ class ErrorHandlingManager {
         // 가이드가 비활성 상태면 인터셉트하지 않음
         if (!isGuideActive) return false
 
-        // ── Step 1: 외부 앱 이탈 검사 (비활성화) ──
-        /*
-        val boundaryResult = boundaryChecker.checkBoundary(event)
-        
-        // 사용자가 자발적으로 원래 앱으로 돌아온 경우 오버레이 제거
-        if (boundaryResult == BoundaryChecker.CheckResult.ON_TRACK) {
-            removeReturnOverlay()
-        }
-
-        if (boundaryResult is BoundaryChecker.CheckResult.EXTERNAL_APP_DEVIATION) {
-            handleExternalDeviation(boundaryResult)
-            return true
-        }
-        if (boundaryResult == BoundaryChecker.CheckResult.ALREADY_NOTIFIED) {
-            return true  // 이미 안내함, 기존 로직도 차단
-        }
-        */
+        // 원래 화면으로 돌아가기 오버레이 기능 제거 요청으로 인해 외부 앱 이탈 검사 비활성화
+        return false
 
         /*
         // ── Step 2: 팝업/광고 감지 ──
