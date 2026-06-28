@@ -202,11 +202,26 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val orchestrator = guideOrchestrator
                 if (orchestrator != null && orchestrator.isActive &&
                     orchestrator.currentState == kr.ac.kopo.talkti.models.GuideState.PRESS_ACTION) {
-                    Log.d(TAG, "[디버그] PRESS_ACTION 상태에서 화면 전환 감지 → LLM 없이 가이드 즉시 종료")
-                    orchestrator.stopGuide()
+                    val finalButtonKeywords = setOf(
+                        "안내시작", "안내 시작", "호출", "전송", "결제", "결제하기",
+                        "보내기", "예약", "신청"
+                    )
+                    val currentTargetText = orchestrator.currentTargetText
+                    val isFinalButton = finalButtonKeywords.any { currentTargetText.contains(it) }
+                    if (isFinalButton) {
+                        Log.d(TAG, "[디버그] PRESS_ACTION 최종 버튼($currentTargetText) 화면 전환 → 가이드 즉시 종료")
+                        val params = android.os.Bundle()
+                        params.putString(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "guide_complete_tts")
+                        textToSpeech?.speak("안내를 시작합니다.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, "guide_complete_tts")
+                        orchestrator.stopGuide()
+                        agentSessionManager.endSession()
+                    } else {
+                        Log.d(TAG, "[디버그] PRESS_ACTION 중간 버튼($currentTargetText) 화면 전환 → 종료 안 함, 다음 단계 진행")
+                    }
                 }
             }
         }
+        uiChangeDetector?.isGuideActive = { guideOrchestrator?.isActive == true }
 
         // ── [신규] GuideOrchestrator 와 UiChangeDetector 의 분석 상태 연동 ──
         guideOrchestrator?.onAnalyzeStateChanged = { analyzing ->
@@ -256,8 +271,13 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                 orchestrator.updatePackageName(currentPkg)
                 val latestUiTreeJson = extractScreenTree()
-                Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
-                orchestrator.onUiChanged(latestUiTreeJson, guideScope)
+                // isActive를 한 번 더 체크 (onUiChangeDetected에서 stopGuide()가 호출된 직후일 수 있음)
+                if (orchestrator.isActive) {
+                    Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
+                    orchestrator.onUiChanged(latestUiTreeJson, guideScope)
+                } else {
+                    Log.d(TAG, "[디버그] onMeaningfulChange 진입 후 가이드 비활성 확인 → onUiChanged 호출 건너뜀")
+                }
             } else if (agentSessionManager.isActive) {
                 if (isAwaitingUserAnswer || isSendingUserAnswer) {
                     Log.d(TAG, "[디버그] 답변 대기/전송 중 -> 자동 재캡처 건너뜀")
