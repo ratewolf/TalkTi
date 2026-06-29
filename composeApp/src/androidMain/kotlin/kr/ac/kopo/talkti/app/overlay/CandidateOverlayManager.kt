@@ -63,8 +63,8 @@ class CandidateOverlayManager(
         val maxBottom = validCandidates.maxOf { it.bounds.bottom }
 
 
-        val containerWidth = (maxRight - minLeft).coerceAtLeast(dp(60))
-        val containerHeight = (maxBottom - minTop).coerceAtLeast(dp(36))
+        val containerWidth = (maxRight - minLeft).coerceAtLeast(dp(10))
+        val containerHeight = (maxBottom - minTop).coerceAtLeast(dp(10))
 
         val root = FrameLayout(context).apply {
             isClickable = false

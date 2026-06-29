@@ -22,6 +22,9 @@ object LlmLoadingOverlay {
     private var windowManager: WindowManager? = null
     private var animator: ValueAnimator? = null
 
+    /** 로딩창을 길게 눌렀을 때 실행할 콜백 (서비스에서 취소 확인 다이얼로그를 띄움) */
+    var onLongPress: (() -> Unit)? = null
+
     val isShowing: Boolean get() = overlayView != null
 
     fun show(context: Context) {
@@ -36,6 +39,12 @@ object LlmLoadingOverlay {
             // 백그라운드 터치 방지 (작업 흐름 단절 방지)
             isClickable = true
             isFocusable = true
+            isLongClickable = true
+            // 로딩창을 길게 누르면 취소 확인 다이얼로그를 띄운다 (무한루프/오작동 시 사용자 탈출구)
+            setOnLongClickListener {
+                onLongPress?.invoke()
+                true
+            }
         }
 
         // 중앙 로딩 카드 레이아웃

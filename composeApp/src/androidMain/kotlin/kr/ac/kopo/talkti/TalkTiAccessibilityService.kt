@@ -14,7 +14,6 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.view.Gravity
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.Toast
 import android.content.Intent
 import android.graphics.Rect
@@ -26,12 +25,12 @@ import android.speech.tts.TextToSpeech
 import android.widget.EditText
 import android.app.AlertDialog
 import android.annotation.SuppressLint
+import kotlin.math.abs
 import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.client.plugins.*
 import kotlinx.coroutines.*
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kr.ac.kopo.talkti.models.AppInfo
 import kr.ac.kopo.talkti.models.ScreenStateRequest
@@ -42,7 +41,6 @@ import kr.ac.kopo.talkti.models.SelectionConversationManager
 import kr.ac.kopo.talkti.models.SelectionPromptBuilder
 import kr.ac.kopo.talkti.models.CandidateExtractor
 import kr.ac.kopo.talkti.models.ActionTargetFinder
-import kr.ac.kopo.talkti.models.SelectionSession
 import kr.ac.kopo.talkti.models.UserResponseParser
 import kr.ac.kopo.talkti.models.UserResponse
 import kr.ac.kopo.talkti.models.SelectionFlow
@@ -55,7 +53,6 @@ import kr.ac.kopo.talkti.models.RouteCandidateFinder
 import kr.ac.kopo.talkti.app.errorhandling.ErrorHandlingManager
 import kr.ac.kopo.talkti.app.guide.GuideOrchestrator
 import kr.ac.kopo.talkti.app.guide.UiChangeDetector
-import kr.ac.kopo.talkti.models.GuideState
 import kr.ac.kopo.talkti.app.guide.AgentSessionManager
 
 class TalkTiAccessibilityService : AccessibilityService() {
@@ -74,12 +71,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
         }
 
-        fun isServiceRunning(): Boolean = instance != null
+        private const val TAG = "TalkTiService"
     }
 
-    private val TAG = "TalkTiService"
-
-    // 음성 선택 시스템 준비
+    // 음성 선택 시스템
     private val selectionManager = SelectionConversationManager()
     private val promptBuilder = SelectionPromptBuilder()
     private val candidateExtractor = CandidateExtractor()
@@ -94,11 +89,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     // ── UI 변경 감지 기반 가이드 시스템 ──
     private var guideOrchestrator: GuideOrchestrator? = null
-    private var uiChangeDetector: UiChangeDetector? = null
+    var uiChangeDetector: UiChangeDetector? = null
+
     private val serviceJob = SupervisorJob()
     private val mainScope = CoroutineScope(Dispatchers.Main.immediate + serviceJob)
+
     private val backgroundScope = CoroutineScope(Dispatchers.IO + serviceJob)
-    internal val guideScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob(serviceJob))
+
+    internal val guideScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
 
     // ── 예외 처리 매니저 (팝업/이탈/무한대기 방지) ──
     private val errorHandlingManager = ErrorHandlingManager()
@@ -121,6 +119,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         DESTINATION_BUTTON,
         ROUTE_SELECTION,
         START_GUIDANCE,
+        KAKAOTALK_PRE_OPEN,
         KAKAOTALK_OPENED,
         KAKAOTALK_SEARCH_CLICKED,
         KAKAOTALK_RESULT_SELECTION,
@@ -131,12 +130,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private var currentGuideStep = GuideStep.NONE
+    private var lastProcessedGuideStep = GuideStep.NONE
+    private var lastGuidedTtsStep = GuideStep.NONE
+    private var isFakeLlmLoadingCompleted = false
+    private var isFakeLlmLoadingActive = false
+    private var isTextInjected = false
     private var mediaType: String? = null // "사진" or "동영상"
     private var llmJob: Job? = null
-    private var thinkingJob: Job? = null
+    private var appLaunchGuardJob: Job? = null // 앱 실행 과도기 가드 타임아웃 보험용 Job
+    // ASK_USER(되물음) 후 사용자 답변을 기다리는 동안 자동 재캡처를 막는 플래그
+    private var isAwaitingUserAnswer: Boolean = false
     private var testReceiver: android.content.BroadcastReceiver? = null
     private var lastInputText: String? = null
     private var lastInputTime: Long = 0L
+    // captureScreenForLLM 중복 호출 차단용
+    private var lastCaptureCommand: String? = null
+    private var lastCaptureTime: Long = 0L
+    // 사용자 답변(ASK_USER 응답 등)을 전송하는 동안, 화면 변경에 의한 job 취소/자동 재캡처를 막는 보호 플래그
+    private var isSendingUserAnswer: Boolean = false
 
     private val client = io.ktor.client.HttpClient(io.ktor.client.engine.android.Android) {
         install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
@@ -169,7 +180,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             actionButtonOverlayManager = actionButtonOverlayManager!!
         )
         guideOrchestrator?.setTts(textToSpeech)
-        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+        val sharedPref = getSharedPreferences("talkti_prefs", MODE_PRIVATE)
         val savedUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
         guideOrchestrator?.setServerUrl(savedUrl)
 
@@ -180,10 +191,37 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 candidateOverlayManager?.clearOverlays()
                 actionButtonOverlayManager?.clearHighlight()
                 guideOrchestrator?.cancelActiveAnalysis()
-                llmJob?.cancel()
-                llmJob = null
+                if (!isSendingUserAnswer) {
+                    llmJob?.cancel()
+                    llmJob = null
+                } else {
+                    Log.d(TAG, "[디버그] 사용자 답변 전송 중 -> llmJob 취소 건너뜀")
+                }
+                // PRESS_ACTION 상태에서 화면이 바뀌면 = 버튼을 눌러서 다음 화면으로 넘어간 것
+                // LLM 호출 없이 즉시 가이드 종료
+                val orchestrator = guideOrchestrator
+                if (orchestrator != null && orchestrator.isActive &&
+                    orchestrator.currentState == kr.ac.kopo.talkti.models.GuideState.PRESS_ACTION) {
+                    val finalButtonKeywords = setOf(
+                        "안내시작", "안내 시작", "호출", "전송", "결제", "결제하기",
+                        "보내기", "예약", "신청"
+                    )
+                    val currentTargetText = orchestrator.currentTargetText
+                    val isFinalButton = finalButtonKeywords.any { currentTargetText.contains(it) }
+                    if (isFinalButton) {
+                        Log.d(TAG, "[디버그] PRESS_ACTION 최종 버튼($currentTargetText) 화면 전환 → 가이드 즉시 종료")
+                        val params = android.os.Bundle()
+                        params.putString(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "guide_complete_tts")
+                        textToSpeech?.speak("안내를 시작합니다.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, "guide_complete_tts")
+                        orchestrator.stopGuide()
+                        agentSessionManager.endSession()
+                    } else {
+                        Log.d(TAG, "[디버그] PRESS_ACTION 중간 버튼($currentTargetText) 화면 전환 → 종료 안 함, 다음 단계 진행")
+                    }
+                }
             }
         }
+        uiChangeDetector?.isGuideActive = { guideOrchestrator?.isActive == true }
 
         // ── [신규] GuideOrchestrator 와 UiChangeDetector 의 분석 상태 연동 ──
         guideOrchestrator?.onAnalyzeStateChanged = { analyzing ->
@@ -198,7 +236,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     // TTS가 이미 말하는 중이면 '생각중' 멘트를 끼워넣지 않음
                     // ("서울역을 입력할게요" 같은 액션 TTS가 잘리는 현상 방지)
                     if (!wasShowing && textToSpeech?.isSpeaking != true) {
-                        speakTts("어떻게 도와드릴지 찾는 중이에요.")
+                        speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
                     }
                 } else {
                     LlmLoadingOverlay.hide()
@@ -209,6 +247,20 @@ class TalkTiAccessibilityService : AccessibilityService() {
         guideOrchestrator?.onStopGuide = {
             Log.d(TAG, "[디버그] GuideOrchestrator.stopGuide() 감지 → uiChangeDetector.reset() 호출")
             uiChangeDetector?.reset()
+            // 피드백 버튼은 사용자가 직접 누를 때까지 유지
+        }
+
+        guideOrchestrator?.onGuideComplete = {
+            Log.d(TAG, "[디버그] Guide COMPLETE 통지 수신 → 세션 및 화면 감지 완전 종료")
+            agentSessionManager.endSession()
+            uiChangeDetector?.reset()
+            removeTargetHighlight()
+            // 피드백 버튼은 사용자가 직접 누를 때까지 유지
+        }
+
+        LlmLoadingOverlay.onLongPress = {
+            Log.d(TAG, "[디버그] 로딩창 길게 누름 감지 → 취소 확인 다이얼로그 표시")
+            showLoadingCancelDialog()
         }
 
         uiChangeDetector?.onMeaningfulChange = {
@@ -219,14 +271,23 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
                 orchestrator.updatePackageName(currentPkg)
                 val latestUiTreeJson = extractScreenTree()
-                Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
-                orchestrator.onUiChanged(latestUiTreeJson, guideScope)
+                // isActive를 한 번 더 체크 (onUiChangeDetected에서 stopGuide()가 호출된 직후일 수 있음)
+                if (orchestrator.isActive) {
+                    Log.d(TAG, "[디버그] UI 변경 통지 수신 (패키지: $currentPkg) → 최신 UI Tree 추출 후 GuideOrchestrator.onUiChanged 호출")
+                    orchestrator.onUiChanged(latestUiTreeJson, guideScope)
+                } else {
+                    Log.d(TAG, "[디버그] onMeaningfulChange 진입 후 가이드 비활성 확인 → onUiChanged 호출 건너뜀")
+                }
             } else if (agentSessionManager.isActive) {
-                Log.d(TAG, "[디버그] 대화 세션 중 의미 있는 화면 전환 감지 -> 캡처 전송")
-                val currentGoal = agentSessionManager.currentGoal
-                if (currentGoal != null) {
-                    if (agentSessionManager.canCapture(1500)) { // 대중교통 등 빠른 탐색을 위해 1.5초 쿨다운으로 보정
-                        captureScreenForLLM(currentGoal)
+                if (isAwaitingUserAnswer || isSendingUserAnswer) {
+                    Log.d(TAG, "[디버그] 답변 대기/전송 중 -> 자동 재캡처 건너뜀")
+                } else {
+                    Log.d(TAG, "[디버그] 대화 세션 중 의미 있는 화면 전환 감지 -> 캡처 전송")
+                    val currentGoal = agentSessionManager.currentGoal
+                    if (currentGoal != null) {
+                        if (agentSessionManager.canCapture(1500)) {
+                            captureScreenForLLM(currentGoal)
+                        }
                     }
                 }
             }
@@ -237,6 +298,12 @@ class TalkTiAccessibilityService : AccessibilityService() {
         errorHandlingManager.onTerminateListener = {
             // 가이드 종료 시 서비스 상태 초기화
             pendingCommand = null
+            currentGuideStep = GuideStep.NONE
+            lastProcessedGuideStep = GuideStep.NONE
+            lastGuidedTtsStep = GuideStep.NONE
+            isFakeLlmLoadingCompleted = false
+            isFakeLlmLoadingActive = false
+            isTextInjected = false
             removeTargetHighlight()
             guideOrchestrator?.stopGuide()
             uiChangeDetector?.reset()
@@ -274,7 +341,22 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
             },
-            onLongClick = { showTerminationDialog() }
+            onLongClick = { showTerminationDialog() },
+            onSuccessClick = {
+                guideOrchestrator?.recordExperienceResult(success = true)
+                floatingMenuManager?.hideFeedbackButtons()
+                // QUEUE_ADD로 기존 TTS 안 끊고 뒤에 붙여서 재생
+                val params = android.os.Bundle()
+                params.putString(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "feedback_tts")
+                textToSpeech?.speak("성공으로 기록했어요.", android.speech.tts.TextToSpeech.QUEUE_ADD, params, "feedback_tts")
+            },
+            onFailClick = {
+                guideOrchestrator?.recordExperienceResult(success = false)
+                floatingMenuManager?.hideFeedbackButtons()
+                val params = android.os.Bundle()
+                params.putString(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "feedback_tts")
+                textToSpeech?.speak("실패로 기록했어요.", android.speech.tts.TextToSpeech.QUEUE_ADD, params, "feedback_tts")
+            }
         )
         floatingMenuManager?.show()
     }
@@ -295,16 +377,56 @@ class TalkTiAccessibilityService : AccessibilityService() {
         dialog.show()
     }
 
+    /**
+     * 진행 중인 LLM 요청/세션을 취소하고 로딩창을 닫아 요청 전 초기 상태로 되돌린다.
+     */
+    private fun cancelOngoingRequest() {
+        llmJob?.cancel()
+        llmJob = null
+        guideOrchestrator?.cancelActiveAnalysis()
+        guideOrchestrator?.stopGuide()
+        agentSessionManager.endSession()
+        uiChangeDetector?.reset()
+        isAwaitingUserAnswer = false
+        pendingCommand = null
+        currentGuideStep = GuideStep.NONE
+        lastProcessedGuideStep = GuideStep.NONE
+        lastGuidedTtsStep = GuideStep.NONE
+        isFakeLlmLoadingCompleted = false
+        isFakeLlmLoadingActive = false
+        isTextInjected = false
+        LlmLoadingOverlay.hide()
+        floatingMenuManager?.updateLoadingStatus(false)
+        removeTargetHighlight()
+        candidateOverlayManager?.clearOverlays()
+        actionButtonOverlayManager?.clearHighlight()
+        speakTts("요청을 취소했습니다.")
+    }
+
+    /**
+     * 로딩창을 길게 눌렀을 때 "취소하시겠어요?" 확인 다이얼로그를 띄운다.
+     */
+    private fun showLoadingCancelDialog() {
+        // 로딩 중이 아닐 땐 무시
+        if (!LlmLoadingOverlay.isShowing) return
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("요청 취소")
+            .setMessage("진행 중인 요청을 취소하시겠어요?")
+            .setPositiveButton("취소하기") { _, _ ->
+                cancelOngoingRequest()
+            }
+            .setNegativeButton("계속", null)
+            .create()
+
+        dialog.window?.setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        dialog.show()
+    }
+
     private fun startAppGuide() {
         // [추가] LLM 대기 중 버튼 누르면 취소 처리
         if (LlmLoadingOverlay.isShowing) {
-            llmJob?.cancel()
-            llmJob = null
-            LlmLoadingOverlay.hide()
-            floatingMenuManager?.updateLoadingStatus(false)
-            agentSessionManager.endSession()
-            removeTargetHighlight()
-            speakTts("요청을 취소했습니다.")
+            cancelOngoingRequest()
             return
         }
 
@@ -328,6 +450,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
             .setPositiveButton("확인") { _, _ ->
                 val command = editText.text.toString()
                 if (command.isNotBlank()) {
+                    // 사용자가 답변/명령을 발화했으므로 대기 모드 해제
+                    isAwaitingUserAnswer = false
                     if (!processLocalCommand(command)) {
                         if (!agentSessionManager.isActive) {
                             agentSessionManager.startSession(command)
@@ -359,6 +483,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (!matches.isNullOrEmpty()) {
                         val userCommand = matches[0]
+                        // 사용자가 답변/명령을 발화했으므로 대기 모드 해제
+                        isAwaitingUserAnswer = false
 
                         val currentFlow = selectionManager.currentFlow
                         if (currentFlow is SelectionFlow.Presenting || currentFlow is SelectionFlow.AwaitingVoice) {
@@ -392,7 +518,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun initTextToSpeech() {
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                textToSpeech?.setLanguage(java.util.Locale.KOREAN)
+                textToSpeech?.language = java.util.Locale.KOREAN
                 Log.d(TAG, "TTS 초기화 성공")
 
                 // [신규] GuideOrchestrator에도 TTS 전달
@@ -419,14 +545,81 @@ class TalkTiAccessibilityService : AccessibilityService() {
                                 guideOrchestrator?.stopGuide()
                             }
                         }
+                        // [신규] 카카오톡 매크로 가짜 LLM TTS 종료 처리
+                        if (utteranceId == "fake_llm_tts") {
+                            mainScope.launch {
+                                Log.d(TAG, "[디버그] 가짜 LLM TTS 완료 감지 -> 로딩창 닫고 실제 가이드 진행")
+                                isFakeLlmLoadingActive = false
+                                isFakeLlmLoadingCompleted = true
+                                hideLlmLoading()
+                                if (currentGuideStep == GuideStep.KAKAOTALK_PRE_OPEN) {
+                                    // PRE_OPEN 완료 ➔ 카카오톡 실행 멘트 시작
+                                    speakTts("카카오톡을 실행합니다.", "kakaotalk_launch_tts")
+                                } else {
+                                    // 로딩 팝업이 닫힌 후 화면이 자연스럽게 가이드를 그리도록 600ms 안정화 지연
+                                    delay(600)
+                                    val freshRoot = rootInActiveWindow
+                                    executeKakaoTalkStepGuide(freshRoot)
+                                }
+                            }
+                        }
+                        // [신규] 카카오톡 실행 안내 TTS 종료 처리
+                        if (utteranceId == "kakaotalk_launch_tts") {
+                            mainScope.launch {
+                                Log.d(TAG, "[디버그] 카카오톡 실행 TTS 완료 -> 카카오톡 앱 실행 및 단계 전이")
+                                val launchedPkg = openAppByName("com.kakao.talk")
+                                if (launchedPkg != null) {
+                                    errorHandlingManager.onGuideStarted(launchedPkg, "카카오톡 사진 전송")
+                                    currentGuideStep = GuideStep.KAKAOTALK_OPENED
+                                    isFakeLlmLoadingCompleted = false
+                                }
+                            }
+                        }
                     }
+
+                    @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
+                        handleError(utteranceId)
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        handleError(utteranceId)
+                    }
+
+                    private fun handleError(utteranceId: String?) {
                         Log.e(TAG, "TTS 에러: $utteranceId")
                         // [신규] 완료 안내 TTS 도중 에러가 나도 강제 stopGuide() 처리하여 교착 방지
                         if (utteranceId == "guide_orchestrator_tts" && guideOrchestrator?.isPendingStop == true) {
                             mainScope.launch {
                                 Log.e(TAG, "[디버그] 완료 안내 TTS 에러 발생 → stopGuide() 강제 호출")
                                 guideOrchestrator?.stopGuide()
+                            }
+                        }
+                        // [신규] 가짜 LLM TTS 도중 에러가 나도 로딩창을 닫고 강제 복구하여 실행
+                        if (utteranceId == "fake_llm_tts") {
+                            mainScope.launch {
+                                Log.e(TAG, "[디버그] 가짜 LLM TTS 에러 발생 -> 강제 가이드 진행으로 복구")
+                                isFakeLlmLoadingActive = false
+                                isFakeLlmLoadingCompleted = true
+                                hideLlmLoading()
+                                if (currentGuideStep == GuideStep.KAKAOTALK_PRE_OPEN) {
+                                    speakTts("카카오톡을 실행합니다.", "kakaotalk_launch_tts")
+                                } else {
+                                    val freshRoot = rootInActiveWindow
+                                    executeKakaoTalkStepGuide(freshRoot)
+                                }
+                            }
+                        }
+                        // [신규] 카카오톡 실행 안내 TTS 도중 에러 발생 시 강제 복구 실행
+                        if (utteranceId == "kakaotalk_launch_tts") {
+                            mainScope.launch {
+                                Log.e(TAG, "[디버그] 카카오톡 실행 TTS 에러 -> 강제 카카오톡 앱 실행")
+                                val launchedPkg = openAppByName("com.kakao.talk")
+                                if (launchedPkg != null) {
+                                    errorHandlingManager.onGuideStarted(launchedPkg, "카카오톡 사진 전송")
+                                    currentGuideStep = GuideStep.KAKAOTALK_OPENED
+                                    isFakeLlmLoadingCompleted = false
+                                }
                             }
                         }
                     }
@@ -443,116 +636,36 @@ class TalkTiAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (isFakeLlmLoadingActive) {
+            return
+        }
+
         // ── 예외 처리 인터셉터: 팝업/이탈/타이머 검사를 기존 로직보다 먼저 수행 ──
         if (errorHandlingManager.interceptEvent(event)) return
 
         // ── 카카오톡 결과 리스트에서 채팅방 클릭 감지 ──
         if (currentGuideStep == GuideStep.KAKAOTALK_RESULT_SELECTION && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clickedNode = event.source
-            var shouldClose = true
-            if (clickedNode != null) {
-                val className = clickedNode.className?.toString() ?: ""
-                if (className.contains("EditText") || className.contains("AutoCompleteTextView") || clickedNode.isEditable) {
-                    shouldClose = false
-                }
-            }
-            if (shouldClose) {
-                removeTargetHighlight()
-                if (mediaType != null) {
-                    Log.d(TAG, "🎯 [클릭 감지] 결과 선택 완료 -> KAKAOTALK_CHATROOM_OPENED")
-                    currentGuideStep = GuideStep.KAKAOTALK_CHATROOM_OPENED
-                } else {
-                    Log.d(TAG, "🎯 [클릭 감지] 일반 채팅방 이동 완료 -> 종료")
-                    currentGuideStep = GuideStep.NONE
-                    pendingCommand = null
-                }
-                return
-            }
+            Log.d(TAG, "🎯 [클릭 감지] 결과 리스트 클릭됨")
         }
 
         // ── 카카오톡 채팅방에서 더보기(+) 클릭 감지 ──
         if (currentGuideStep == GuideStep.KAKAOTALK_CHATROOM_OPENED && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clickedNode = event.source
-            if (clickedNode != null) {
-                val desc = clickedNode.contentDescription?.toString() ?: ""
-                val text = clickedNode.text?.toString() ?: ""
-                val viewId = clickedNode.viewIdResourceName ?: ""
-
-                if (desc.contains("플러스") || desc.contains("더보기") || desc.contains("메뉴") || desc.contains("공유") ||
-                    desc == "+" || text == "+" ||
-                    viewId.endsWith("chat_menu_button") || viewId.endsWith("btn_chat_menu")
-                ) {
-                    val rect = Rect()
-                    clickedNode.getBoundsInScreen(rect)
-                    val screenHeight = resources.displayMetrics.heightPixels
-                    if (rect.top > screenHeight / 2) {
-                        Log.d(TAG, "🎯 [클릭 감지] 플러스 버튼 클릭됨 -> KAKAOTALK_PLUS_MENU_OPENED")
-                        removeTargetHighlight()
-                        currentGuideStep = GuideStep.KAKAOTALK_PLUS_MENU_OPENED
-                        return
-                    }
-                }
-            }
+            Log.d(TAG, "🎯 [클릭 감지] 플러스 버튼 클릭 감지")
         }
 
         // ── 플러스 메뉴에서 앨범/미디어 클릭 감지 ──
         if (currentGuideStep == GuideStep.KAKAOTALK_PLUS_MENU_OPENED && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clickedNode = event.source
-            if (clickedNode != null) {
-                val text = clickedNode.text?.toString() ?: ""
-                val desc = clickedNode.contentDescription?.toString() ?: ""
-                val viewId = clickedNode.viewIdResourceName ?: ""
-
-                if (text == "앨범" || desc == "앨범" || text.contains("사진") || text.contains("동영상") ||
-                    viewId.endsWith("album_btn") || text.contains("album") || desc.contains("album")
-                ) {
-                    Log.d(TAG, "🎯 [클릭 감지] 앨범 버튼 클릭됨 -> KAKAOTALK_MEDIA_CHOOSER_OPENED")
-                    removeTargetHighlight()
-                    currentGuideStep = GuideStep.KAKAOTALK_MEDIA_CHOOSER_OPENED
-                    return
-                }
-            }
+            Log.d(TAG, "🎯 [클릭 감지] 앨범 버튼 클릭 감지")
         }
 
         // ── 미디어 선택 화면에서 썸네일 클릭 감지 ──
         if (currentGuideStep == GuideStep.KAKAOTALK_MEDIA_CHOOSER_OPENED && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clickedNode = event.source
-            if (clickedNode != null) {
-                val desc = clickedNode.contentDescription?.toString() ?: ""
-                val className = clickedNode.className?.toString() ?: ""
-                val viewId = clickedNode.viewIdResourceName ?: ""
-
-                if (className.contains("ImageView") || viewId.endsWith("thumbnail") || viewId.endsWith("image") ||
-                    desc.contains("사진") || desc.contains("동영상") || desc.contains("선택")
-                ) {
-                    Log.d(TAG, "🎯 [클릭 감지] 미디어 아이템 선택됨 -> KAKAOTALK_MEDIA_SEND_READY")
-                    removeTargetHighlight()
-                    currentGuideStep = GuideStep.KAKAOTALK_MEDIA_SEND_READY
-                    return
-                }
-            }
+            Log.d(TAG, "🎯 [클릭 감지] 미디어 아이템 선택 감지")
         }
 
         // ── 전송 버튼 클릭 감지 ──
         if (currentGuideStep == GuideStep.KAKAOTALK_MEDIA_SEND_READY && event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            val clickedNode = event.source
-            if (clickedNode != null) {
-                val text = clickedNode.text?.toString() ?: ""
-                val desc = clickedNode.contentDescription?.toString() ?: ""
-                val viewId = clickedNode.viewIdResourceName ?: ""
-
-                if (text.contains("전송") || desc.contains("전송") || text.contains("보내기") || desc.contains("보내기") ||
-                    viewId.endsWith("send_btn") || viewId.endsWith("ok_btn") || viewId.endsWith("confirm")
-                ) {
-                    Log.d(TAG, "🎯 [클릭 감지] 전송 버튼 클릭됨 -> 완료 종료")
-                    removeTargetHighlight()
-                    speakTts("전송을 완료합니다.")
-                    currentGuideStep = GuideStep.NONE
-                    pendingCommand = null
-                    mediaType = null
-                    return
-                }
-            }
+            Log.d(TAG, "🎯 [클릭 감지] 전송 버튼 클릭 감지")
         }
 
         // [수정] 사용자가 가이드된 타겟 영역을 클릭(터치)했을 때만 오버레이 및 TTS 정지/제거 처리
@@ -569,6 +682,24 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 
                 // 클릭 발생을 UI 변경 감지기에 통지하여 과도기 지연 분석 트리거
                 uiChangeDetector?.notifyClick()
+
+                // PRESS_ACTION 상태에서 최종 버튼 텍스트가 감지되면 즉시 가이드 종료
+                // (LLM이 FINAL을 안정적으로 반환하지 않아 버튼 텍스트로 직접 판단)
+                if (orchestrator.currentState == kr.ac.kopo.talkti.models.GuideState.PRESS_ACTION) {
+                    val finalButtonKeywords = setOf(
+                        "안내시작", "안내 시작", "호출", "전송", "결제", "결제하기",
+                        "확인", "완료", "보내기", "예약", "신청"
+                    )
+                    val clickedText = event.source?.text?.toString() ?: ""
+                    val clickedDesc = event.source?.contentDescription?.toString() ?: ""
+                    val isFinalButton = finalButtonKeywords.any {
+                        clickedText.contains(it) || clickedDesc.contains(it)
+                    }
+                    if (isFinalButton) {
+                        Log.d(TAG, "[디버그] 최종 버튼 클릭 감지 ('$clickedText') → 가이드 즉시 종료")
+                        orchestrator.stopGuide()
+                    }
+                }
             } else {
                 // 가이드 모드가 아닐 때도 항상 정리 및 클릭 통지
                 removeTargetHighlight()
@@ -650,129 +781,127 @@ class TalkTiAccessibilityService : AccessibilityService() {
             val rootNode = rootInActiveWindow
             val targetFriend = pendingCommand ?: "아부지"
 
-            if (currentGuideStep == GuideStep.KAKAOTALK_OPENED) {
-                // EditText(검색창)가 등장했다면 즉시 검색 입력 단계로 전환
+            // A. 화면의 실제 UI 요소 기반 강제 상태(currentGuideStep) 전이 로직
+            if (currentGuideStep == GuideStep.KAKAOTALK_PRE_OPEN) {
+                // 이 단계는 앱 실행 완료 후 kakaotalk_launch_tts 콜백에서 KAKAOTALK_OPENED로 수동 전이됩니다.
+            }
+            else if (currentGuideStep == GuideStep.KAKAOTALK_OPENED) {
                 if (hasEditText(rootNode)) {
-                    removeTargetHighlight()
                     currentGuideStep = GuideStep.KAKAOTALK_SEARCH_CLICKED
-                } else {
-                    val searchButton = findKakaoTalkSearchButton(rootNode)
-                    if (searchButton != null) {
-                        Log.d("DUMP_검색", extractScreenTree())
-                        val rect = Rect()
-                        searchButton.getBoundsInScreen(rect)
-                        val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                        showTargetHighlight(bounds, "돋보기 모양 검색 버튼을 눌러주세요.", Color.RED)
-                        speakTts("돋보기 모양 검색 버튼을 눌러주세요.")
-                    }
                 }
             }
             else if (currentGuideStep == GuideStep.KAKAOTALK_SEARCH_CLICKED) {
-                // EditText에 친구 이름(예: 아부지) 주입 시도
-                val typed = autofillEditTextInActiveWindow(targetFriend)
-                if (typed) {
-                    speakTts("${targetFriend}을 입력했습니다.")
+                // 입력창에 친구 이름이 주입되었고, 검색 결과 노드가 실제로 보일 때에만 KAKAOTALK_RESULT_SELECTION로 전이
+                if (hasSearchEditText(rootNode, targetFriend) && findKakaoTalkSearchResult(rootNode, targetFriend) != null) {
                     currentGuideStep = GuideStep.KAKAOTALK_RESULT_SELECTION
                 }
             }
             else if (currentGuideStep == GuideStep.KAKAOTALK_RESULT_SELECTION) {
-                // 상단 검색창(EditText)이 화면에 여전히 존재하는 동안 결과를 기다림 (레이스 컨디션 및 채팅방 구분 방지)
-                if (hasTopSearchEditText(rootNode)) {
-                    if (hasSearchEditText(rootNode, targetFriend)) {
-                        val resultNode = findKakaoTalkSearchResult(rootNode, targetFriend)
-                        if (resultNode != null) {
-                            val rect = Rect()
-                            resultNode.getBoundsInScreen(rect)
-                            val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                            showTargetHighlight(bounds, "검색된 $targetFriend 채팅방을 눌러주세요.", Color.RED)
-                            speakTts("검색된 $targetFriend 채팅방을 눌러주세요.")
-                        }
-                    }
-                } else {
-                    // 상단 검색창이 완전히 사라졌다 -> 이미 클릭해서 채팅방으로 들어간 상태!
-                    removeTargetHighlight()
+                // 상단 검색창이 완전히 사라지고 채팅방 메뉴 버튼이 탐색되면 ➔ KAKAOTALK_CHATROOM_OPENED로 전이
+                if (!hasTopSearchEditText(rootNode) && findKakaoTalkChatMenuButton() != null) {
                     if (mediaType != null) {
                         currentGuideStep = GuideStep.KAKAOTALK_CHATROOM_OPENED
                     } else {
+                        Log.d(TAG, "🎯 [결과 선택 완료] 일반 채팅방 이동 완료 -> 종료")
+                        speakTts("전송을 완료합니다.")
                         currentGuideStep = GuideStep.NONE
                         pendingCommand = null
+                        lastProcessedGuideStep = GuideStep.NONE
+                        isFakeLlmLoadingCompleted = false
+                        isFakeLlmLoadingActive = false
+                        removeTargetHighlight()
+                        return
                     }
                 }
             }
             else if (currentGuideStep == GuideStep.KAKAOTALK_CHATROOM_OPENED) {
                 if (hasPlusMenuOpen(rootNode)) {
-                    removeTargetHighlight()
                     currentGuideStep = GuideStep.KAKAOTALK_PLUS_MENU_OPENED
-                } else {
-                    val chatMenuButton = findKakaoTalkChatMenuButton(rootNode)
-                    if (chatMenuButton != null) {
-                        Log.d("DUMP_플러스", extractScreenTree())
-                        val rect = Rect()
-                        chatMenuButton.getBoundsInScreen(rect)
-                        val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                        showTargetHighlight(bounds, "더보기 플러스 버튼을 눌러주세요.", Color.RED)
-                        speakTts("입력창 왼쪽의 플러스 버튼을 눌러주세요.")
-                    }
                 }
             }
             else if (currentGuideStep == GuideStep.KAKAOTALK_PLUS_MENU_OPENED) {
                 if (hasMediaChooserOpen(rootNode)) {
-                    removeTargetHighlight()
                     currentGuideStep = GuideStep.KAKAOTALK_MEDIA_CHOOSER_OPENED
-                } else {
-                    val mediaButton = findKakaoTalkMediaButton(rootNode, mediaType ?: "사진")
-                    if (mediaButton != null) {
-                        Log.d("DUMP_사진", extractScreenTree())
-                        val rect = Rect()
-                        mediaButton.getBoundsInScreen(rect)
-                        val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                        val typeKorean = if (mediaType == "동영상") "동영상" else "사진"
-                        showTargetHighlight(bounds, "앨범 버튼을 눌러주세요.", Color.RED)
-                        speakTts("${typeKorean} 전송을 위해 앨범 버튼을 눌러주세요.")
-                    }
                 }
             }
             else if (currentGuideStep == GuideStep.KAKAOTALK_MEDIA_CHOOSER_OPENED) {
-                val mediaGrid = findKakaoTalkMediaGrid(rootNode)
-                if (mediaGrid != null) {
-                    val rect = Rect()
-                    mediaGrid.getBoundsInScreen(rect)
-                    val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                    val typeKorean = if (mediaType == "동영상") "보낼 동영상" else "보낼 사진"
-                    showTargetHighlight(bounds, "보낼 파일을 선택해주세요.", Color.RED)
-                    speakTts("보낼 ${typeKorean}을 선택해주세요.")
+                // 우측 상단 전송 버튼이 존재하고, 실제로 보낼 사진이 하나 이상 선택되었을 때에만 KAKAOTALK_MEDIA_SEND_READY로 전이
+                if (findKakaoTalkMediaSendButton(rootNode) != null && isMediaSelected(rootNode)) {
+                    currentGuideStep = GuideStep.KAKAOTALK_MEDIA_SEND_READY
                 }
             }
             else if (currentGuideStep == GuideStep.KAKAOTALK_MEDIA_SEND_READY) {
-                if (!hasMediaChooserOpen(rootNode)) {
-                    Log.d(TAG, "🎯 [화면 전환] 미디어 선택창이 닫혀 가이드 종료!")
-                    removeTargetHighlight()
+                // 미디어 선택창이 닫히거나 전송 버튼이 사라진 경우 ➔ 최종 완료 및 종료
+                if (!hasMediaChooserOpen(rootNode) || findKakaoTalkMediaSendButton(rootNode) == null) {
+                    Log.d(TAG, "🎯 [전송 완료] 미디어 선택창 닫힘 -> 가이드 종료")
                     speakTts("전송을 완료합니다.")
                     currentGuideStep = GuideStep.NONE
                     pendingCommand = null
                     mediaType = null
-                } else {
-                    val sendButton = findKakaoTalkMediaSendButton(rootNode)
-                    if (sendButton != null) {
-                        val rect = Rect()
-                        sendButton.getBoundsInScreen(rect)
-                        val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
-
-                        showTargetHighlight(bounds, "전송 버튼을 눌러주세요.", Color.RED)
-                        speakTts("우측 상단의 전송 버튼을 눌러주세요.")
-                    }
+                    lastProcessedGuideStep = GuideStep.NONE
+                    isFakeLlmLoadingCompleted = false
+                    isFakeLlmLoadingActive = false
+                    removeTargetHighlight()
+                    return
                 }
             }
+
+            // B. 단계 변경 감지 및 리셋
+            if (currentGuideStep != lastProcessedGuideStep) {
+                Log.d(TAG, "[디버그] 카카오톡 가이드 단계 전이 감지: $lastProcessedGuideStep -> $currentGuideStep (로딩 상태 초기화)")
+                lastProcessedGuideStep = currentGuideStep
+                
+                // 사용자 요청에 따라 정확히 다음 5가지 상태 전이 시에만 가짜 LLM 로딩창을 활성화합니다.
+                if (currentGuideStep == GuideStep.KAKAOTALK_PRE_OPEN ||
+                    currentGuideStep == GuideStep.KAKAOTALK_OPENED ||
+                    currentGuideStep == GuideStep.KAKAOTALK_RESULT_SELECTION ||
+                    currentGuideStep == GuideStep.KAKAOTALK_CHATROOM_OPENED ||
+                    currentGuideStep == GuideStep.KAKAOTALK_PLUS_MENU_OPENED
+                ) {
+                    isFakeLlmLoadingCompleted = false
+                } else {
+                    isFakeLlmLoadingCompleted = true
+                }
+                isTextInjected = false
+            }
+
+            // C. 가짜 LLM 로딩 연출 인터셉터
+            if (!isFakeLlmLoadingCompleted) {
+                if (!isFakeLlmLoadingActive) {
+                    isFakeLlmLoadingActive = true
+                    
+                    // 기존 오버레이 및 하이라이트 즉시 청소
+                    removeTargetHighlight()
+                    candidateOverlayManager?.clearOverlays()
+                    actionButtonOverlayManager?.clearHighlight()
+                    
+                    // 로딩창 팝업 연출 가동
+                    LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+                    floatingMenuManager?.bringToFront()
+                    floatingMenuManager?.updateLoadingStatus(true)
+                    
+                    // "fake_llm_tts" 꼬리표와 함께 생각중 안내 음성 출력
+                    speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.", "fake_llm_tts")
+                }
+                // 로딩 중이므로 가이드 출력을 지연시키고 즉시 반환
+                return
+            }
+
+            // D. 가짜 LLM 완료 후 실제 가이드 실행
+            executeKakaoTalkStepGuide(rootNode)
         }
         if (
             event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
+            // 앱 실행 과도기 중 진짜 화면 전환(WINDOW_STATE_CHANGED)이 오면 그때 가드 해제 후 분석 시작
+            if (uiChangeDetector?.isAppLaunching == true &&
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                val pkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                Log.d(TAG, "[디버그] 앱 실행 과도기 중 화면 전환 감지 → 가드 해제 (pkg=$pkg)")
+                releaseAppLaunchGuard(pkg)
+                return  // 이 이벤트는 가드 해제로 소비, 아래 일반 처리로 흘리지 않음
+            }
             // 포그라운드 패키지가 변경되었는지 감지하기 위해 즉시 패키지명 업데이트 시도
             val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
             if (currentPkg.isNotBlank()) {
@@ -802,7 +931,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 val elements = try {
                     Json.decodeFromString<List<UiElement>>(uiTreeJson)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     emptyList()
                 }
 
@@ -833,7 +962,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 val elements = try {
                     Json.decodeFromString<List<UiElement>>(uiTreeJson)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     emptyList()
                 }
 
@@ -868,16 +997,17 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val launched = launchMapWithDeepLink(appNameOrPackage, searchQuery)
                 if (launched) return appNameOrPackage
             }
+
             val intent = pm.getLaunchIntentForPackage(appNameOrPackage)
             if (intent != null) {
                 // 기존 태스크를 완전히 지우고 새 태스크로 앱을 처음부터 실행 (실행종료 후 재실행 효과)
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 startActivity(intent)
                 val appLabel = pm.getApplicationLabel(pm.getApplicationInfo(appNameOrPackage, 0))
-                speakTts("${appLabel} 앱을 실행합니다.")
+                speakTts("$appLabel 앱을 실행합니다.")
                 return appNameOrPackage
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // 패키지명이 아닌 경우 아래의 검색 로직으로 진행
         }
 
@@ -902,8 +1032,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
             "네이버맵" to listOf("com.nhn.android.nmap"),
             //택시
             "택시" to listOf("com.kakao.taxi"),
-            "카카오택시" to listOf("com.kakao.taxi"),
             "카카오티" to listOf("com.kakao.taxi"),
+            "카카오t" to listOf("com.kakao.taxi"),
+            "카카오택시" to listOf("com.kakao.taxi"),
             "콜택시" to listOf("com.kakao.taxi"),
             //통신
             "전화" to listOf("com.samsung.android.dialer"),
@@ -954,6 +1085,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val launched = launchMapWithDeepLink(installedPackage, searchQuery)
                         if (launched) return installedPackage
                     }
+
                     val intent = pm.getLaunchIntentForPackage(installedPackage)
                     if (intent != null) {
                         // 기존 태스크를 완전히 지우고 새 태스크로 앱을 처음부터 실행 (실행종료 후 재실행 효과)
@@ -980,6 +1112,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         val launched = launchMapWithDeepLink(appInfo.packageName, searchQuery)
                         if (launched) return appInfo.packageName
                     }
+
                     // 기존 태스크를 완전히 지우고 새 태스크로 앱을 처음부터 실행 (실행종료 후 재실행 효과)
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                     startActivity(intent)
@@ -997,6 +1130,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
                packageName == "com.skt.tmap.ku" || 
                packageName == "com.skt.tmap"
     }
+
+
 
     private fun launchMapWithDeepLink(packageName: String, query: String): Boolean {
         return try {
@@ -1026,18 +1161,46 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun startGuideFlow(command: String, packageName: String) {
-        uiChangeDetector?.reset()
-        uiChangeDetector?.isAppLaunching = true // 앱 런치 과도기 이벤트 무시 설정
+        // reset() 은 호출하지 않는다. (UiChangeDetector 가 isFirstRun 으로 빠지면
+        //  로딩바 폴링/debounce 를 건너뛰고 즉시 분석해버리므로)
+        uiChangeDetector?.isAppLaunching = true   // 앱 실행 과도기 동안 이벤트 폭주 차단
         guideOrchestrator?.startGuide(command, packageName)
-        
-        // 가이드 시작 후 앱이 로딩되고 화면이 완전히 그려질 시간을 확보하기 위해 약간 지연 후 분석 실행 (3초 지연 현상 방지)
-        guideScope.launch {
-            delay(1200) // 1.2초 대기하여 카카오맵 검색 결과 등이 뜰 때까지 대기
-            uiChangeDetector?.isAppLaunching = false // 앱 런치 과도기 완료
-            val initialUiTree = extractScreenTree()
-            Log.d(TAG, "[디버그] 가이드 시작 후 지연 분석을 실행합니다.")
-            guideOrchestrator?.onUiChanged(initialUiTree, guideScope)
+        floatingMenuManager?.showFeedbackButtons()
+
+        // 고정 시간 대기(delay 600/1200)는 제거한다.
+        // 대신 onAccessibilityEvent 에서 TYPE_WINDOW_STATE_CHANGED(32) 이벤트가 오면
+        // 그때 가드를 풀고 분석을 시작한다 (releaseAppLaunchGuard()).
+        //
+        // 안전장치: 32 이벤트가 끝내 오지 않는 앱을 대비해 최대 3초 후 강제로 가드를 푼다.
+        appLaunchGuardJob?.cancel()
+        appLaunchGuardJob = guideScope.launch {
+            delay(3000)
+            if (uiChangeDetector?.isAppLaunching == true) {
+                Log.d(TAG, "[디버그] 앱 실행 가드 타임아웃(3초) — 화면 전환 이벤트 없이 강제 해제")
+                releaseAppLaunchGuard(packageName)
+            }
         }
+    }
+
+    /**
+     * 앱 실행 과도기 가드를 풀고, 현재 화면을 감지기에 투입해 분석을 시작시킨다.
+     * 중복 호출돼도 1회만 동작하도록 isAppLaunching 플래그로 가드한다.
+     */
+    private fun releaseAppLaunchGuard(packageName: String) {
+        if (uiChangeDetector?.isAppLaunching != true) return  // 이미 풀렸으면 무시
+        appLaunchGuardJob?.cancel()
+        appLaunchGuardJob = null
+        uiChangeDetector?.isAppLaunching = false
+
+        val initialUiTree = extractScreenTree()
+        Log.d(TAG, "[디버그] 앱 실행 가드 해제 → 화면 안정 감지에 위임")
+        uiChangeDetector?.onNewUiTree(
+            uiTreeJson = initialUiTree,
+            scope = guideScope,
+            eventType = 32,        // 화면 전환으로 취급
+            screenHeight = resources.displayMetrics.heightPixels,
+            immediate = false      // 로딩바 폴링/debounce 거치게 함
+        )
     }
 
     private fun processLocalCommand(command: String): Boolean {
@@ -1050,28 +1213,29 @@ class TalkTiAccessibilityService : AccessibilityService() {
             val friendName = kakaoMatchResult.groupValues[1].trim()
             if (friendName.isNotBlank()) {
                 pendingCommand = friendName
-                currentGuideStep = GuideStep.KAKAOTALK_OPENED
+                currentGuideStep = GuideStep.KAKAOTALK_PRE_OPEN
+                lastProcessedGuideStep = GuideStep.KAKAOTALK_PRE_OPEN
+                isFakeLlmLoadingCompleted = false
+                isFakeLlmLoadingActive = true
 
                 // 미디어 타입 분석
-                if (command.contains("사진") || command.contains("이미지") || command.contains("앨범")) {
-                    mediaType = "사진"
-                } else if (command.contains("동영상") || command.contains("비디오") || command.contains("영상")) {
-                    mediaType = "동영상"
-                } else {
-                    mediaType = null
+                mediaType = when {
+                    command.contains("사진") || command.contains("이미지") || command.contains("앨범") -> "사진"
+                    command.contains("동영상") || command.contains("비디오") || command.contains("영상") -> "동영상"
+                    else -> null
                 }
 
-                val launchedPkg = openAppByName("com.kakao.talk")
-                if (launchedPkg != null) {
-                    errorHandlingManager.onGuideStarted(launchedPkg, command)
-                    return true
-                }
+                // 생각중 로딩창 표시 및 TTS 재생
+                removeTargetHighlight()
+                LlmLoadingOverlay.show(this@TalkTiAccessibilityService)
+                floatingMenuManager?.bringToFront()
+                floatingMenuManager?.updateLoadingStatus(true)
+                speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.", "fake_llm_tts")
+                return true
             }
         }
 
         // 1. 의도 파악 (공백 제거 기반 키워드 매칭)
-        val routeKeywords = listOf("가자", "가는길찾아줘", "길찾아줘", "찾아달라니까", "찾아줘", "어떻게가", "가고싶어", "알려줘", "길찾기")
-        val isRouteCommand = routeKeywords.any { cleanCmd.endsWith(it) || cleanCmd.contains(it) }
         val isAppOpenCmd = cleanCmd.contains("열어") || cleanCmd.contains("켜") || cleanCmd.contains("실행") || cleanCmd.contains("보여줘")
 
         // [수정] 대화 중심 LLM 의도 분석을 위해 음성 인식 시점에 미리 startGuideFlow()를 실행하지 않음
@@ -1115,6 +1279,18 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
 
     fun captureScreenForLLM(userCommand: String) {
+        // 중복 전송 차단: 같은 명령이 2초 이내에 다시 들어오면 무시
+        // (onResults 와 onMeaningfulChange 가 첫 명령 직후 거의 동시에 호출되는 경쟁 조건 방지)
+        val now = System.currentTimeMillis()
+        if (userCommand == lastCaptureCommand && now - lastCaptureTime < 2000) {
+            Log.d(TAG, "[디버그] captureScreenForLLM 중복 호출 차단: '$userCommand' (${now - lastCaptureTime}ms 전 동일 명령)")
+            return
+        }
+        lastCaptureCommand = userCommand
+        lastCaptureTime = now
+
+        isSendingUserAnswer = true
+
         removeTargetHighlight()
         showLlmLoading()
 
@@ -1176,8 +1352,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
-        val sharedPref = getSharedPreferences("talkti_prefs", Context.MODE_PRIVATE)
+    private fun sendDataToServer(command: String, base64Image: String, uiTree: String, screenSessionId: String) {
+        val sharedPref = getSharedPreferences("talkti_prefs", MODE_PRIVATE)
         var baseUrl = sharedPref.getString("server_url", "http://guide.aikopo.net") ?: "http://guide.aikopo.net"
 
         baseUrl = baseUrl.trim().removeSuffix("/")
@@ -1198,7 +1374,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 floatingMenuManager?.bringToFront()
                 floatingMenuManager?.updateLoadingStatus(true)
                 if (!wasShowing) {
-                    speakTts("어떻게 도와드릴지 찾는 중이에요.")
+                    speakTts("똑띠가 생각 중이에요. 잠시만 기다려주세요.")
                 }
             }
             try {
@@ -1216,6 +1392,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                 Log.d(TAG, "서버 응답 수신 성공: ${response.ttsMessage}")
                 withContext(Dispatchers.Main) {
+                    isSendingUserAnswer = false
                     floatingMenuManager?.updateLoadingStatus(false)
                     
                     if (response.actionType == "FINISH") {
@@ -1226,6 +1403,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     
                     // [수정] ASK_USER일 경우 음성 인식 재개를 위해 ID 부여
                     val utteranceId = if (response.actionType == "ASK_USER") "talkti_selection_ask" else "talkti_tts"
+                    // ASK_USER(되물음)이면 사용자 답변 대기 모드로 전환하여 자동 재캡처를 멈춘다.
+                    // 그 외 액션(OPEN_APP/CLICK 등)이면 대기 해제.
+                    isAwaitingUserAnswer = (response.actionType == "ASK_USER")
                     speakTts(response.ttsMessage, utteranceId)
 
                     // [수정] 질문(ASK_USER)일 때는 노란색, 그 외 액션은 빨간색 가이드
@@ -1234,73 +1414,79 @@ class TalkTiAccessibilityService : AccessibilityService() {
                     val targetBounds = response.targetBounds
                     if (targetBounds != null) {
                         val keepInfinite = (response.actionType == "GUIDE" || response.actionType == "ASK_USER")
-                        showTargetHighlight(targetBounds, response.ttsMessage, highlightColor, keepInfinite)
+                        // CLICK 같은 단일 액션 버튼은 서버가 준 좌표가 이미 정확하므로 좌표 보정(findOptimizedBounds)을 건너뛴다.
+                        // (가장자리 버튼이 옆 버튼 좌표로 흘러 오른쪽으로 치우치는 문제 방지)
+                        // GUIDE(목록)/ASK_USER 는 기존대로 보정을 적용한다.
+                        val skipOpt = (response.actionType == "CLICK")
+                        showTargetHighlight(targetBounds, highlightColor, keepInfinite, skipOptimize = skipOpt)
                     } else {
                         removeTargetHighlight()
                     }
 
-                    if (response.actionType == "OPEN_APP") {
-                        val targetId = response.targetCandidateId
-                        Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
-                        if (targetId != null) {
-                            val query = if (!response.actionArguments.isNullOrBlank()) {
-                                response.actionArguments
-                            } else {
-                                cleanSearchQuery(command)
-                            }
-                            val launchedPkg = openAppByName(targetId, query)
-                            if (launchedPkg != null) {
-                                Log.d(TAG, "앱 실행 후 가이드 흐름 진행 (패키지: $launchedPkg)")
-                                val finalGoal = agentSessionManager.currentGoal ?: command
-                                errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
-                                startGuideFlow(finalGoal, launchedPkg)
-                                keepLoadingOverlay = true
-                            }
-                        }
-                    } else if (response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT") {
-                        val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
-                        if (currentPkg.isNotBlank()) {
-                            val finalGoal = agentSessionManager.currentGoal ?: command
-                            errorHandlingManager.onGuideStarted(currentPkg, finalGoal)
-                            startGuideFlow(finalGoal, currentPkg)
-                            keepLoadingOverlay = true
-                        }
-                    } else {
-                        Log.d(TAG, "대화형 상태(ASK_USER 등) 또는 기타 상태 - guideOrchestrator 가이드 흐름을 시작하지 않습니다.")
-                    }
-                    if (response.actionType == "OPEN_APP") {
-                        // OPEN_APP 처리는 이미 위에서 완료
-                    } else if (response.actionType == "ACTION_SET_TEXT" && !response.actionArguments.isNullOrBlank()) {
-                        println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
-                        response.targetBounds?.let { bounds ->
-                            mainScope.launch {
-                                delay(1000)
-                                val success = performImmediateActionSetText(bounds, response.actionArguments!!)
-                                if (!success) {
-                                    // [수정] 자동 클릭 기능을 전면 제거하여 사용자 직접 클릭 유도
-                                    // performImmediateActionClick(bounds)
+                    when (response.actionType) {
+                        "OPEN_APP" -> {
+                            val targetId = response.targetCandidateId
+                            Log.d(TAG, "OPEN_APP 시도: targetId=$targetId")
+                            if (targetId != null) {
+                                val query = if (!response.actionArguments.isNullOrBlank()) {
+                                    response.actionArguments
+                                } else {
+                                    cleanSearchQuery(command)
+                                }
+                                val launchedPkg = openAppByName(targetId, query)
+                                if (launchedPkg != null) {
+                                    Log.d(TAG, "앱 실행 후 가이드 흐름 진행 (패키지: $launchedPkg)")
+                                    val finalGoal = agentSessionManager.currentGoal ?: command
+                                    errorHandlingManager.onGuideStarted(launchedPkg, finalGoal)
+                                    startGuideFlow(finalGoal, launchedPkg)
+                                    keepLoadingOverlay = false
                                 }
                             }
                         }
-                    } else if (response.actionType == "CLICK") {
-                        println("자동 클릭 예약 실행 (사용자 클릭 유도로 변경하여 자동 클릭 비활성화)")
-                        response.targetBounds?.let { bounds ->
+                        "CLICK", "ACTION_SET_TEXT" -> {
+                            val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                            if (currentPkg.isNotBlank()) {
+                                val finalGoal = agentSessionManager.currentGoal ?: command
+                                errorHandlingManager.onGuideStarted(currentPkg, finalGoal)
+                                startGuideFlow(finalGoal, currentPkg)
+                                keepLoadingOverlay = true
+                            }
+                        }
+                        else -> {
+                            Log.d(TAG, "대화형 상태(ASK_USER 등) 또는 기타 상태 - guideOrchestrator 가이드 흐름을 시작하지 않습니다.")
+                        }
+                    }
+
+                    when (response.actionType) {
+                        "OPEN_APP" -> { /* OPEN_APP 처리는 이미 위에서 완료 */ }
+                        "ACTION_SET_TEXT" -> {
+                            if (!response.actionArguments.isNullOrBlank()) {
+                                println("자동 텍스트 입력 예약 실행: ${response.actionArguments}")
+                                response.targetBounds?.let { bounds ->
+                                    mainScope.launch {
+                                        delay(1000)
+                                        performImmediateActionSetText(bounds, response.actionArguments!!)
+                                    }
+                                }
+                            }
+                        }
+                        "CLICK" -> {
+                            println("자동 클릭 예약 실행 (사용자 클릭 유도로 변경하여 자동 클릭 비활성화)")
                             mainScope.launch {
                                 delay(1000)
-                                // [수정] 자동 클릭 기능을 제거하여 사용자가 하이라이트를 보고 직접 클릭하도록 함
-                                // performImmediateActionClick(bounds)
-                                // LLM 모드에서는 pendingCommand를 사용한 강제 주입을 하지 않고 LLM 루프에 맡김
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
+                isSendingUserAnswer = false
                 Log.e(TAG, "서버 통신 실패 (${e.javaClass.simpleName}): ${e.message}")
                 withContext(Dispatchers.Main) {
                     floatingMenuManager?.updateLoadingStatus(false)
                     Toast.makeText(this@TalkTiAccessibilityService, "연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             } finally {
+                isSendingUserAnswer = false
                 withContext(Dispatchers.Main) {
                     if (!keepLoadingOverlay) {
                         floatingMenuManager?.updateLoadingStatus(false)
@@ -1329,12 +1515,6 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun isValidGuideResponse(response: GuideActionResponse, requestSessionId: String): Boolean {
-        if (response.actionType == "OPEN_APP") return true
-        if (response.actionType == "CLICK" && response.targetBounds == null) return false
-        return true
-    }
-
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val outputStream = ByteArrayOutputStream()
         // 압축률을 50%로 조정하여 전송 데이터 크기를 대폭 줄임
@@ -1350,7 +1530,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (currentCandidate != null) {
                 val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
                 speakTts(prompt, "talkti_selection_ask")
-                showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
+                showTargetHighlight(currentCandidate.bounds, Color.YELLOW)
             }
             return
         }
@@ -1362,14 +1542,14 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val candidate = flow.selected
                 val ttsMessage = "${candidate.text} 선택이 완료되었습니다."
                 speakTts(ttsMessage)
-                showTargetHighlight(candidate.bounds, ttsMessage, Color.RED)
+                showTargetHighlight(candidate.bounds, Color.RED)
             }
             is SelectionFlow.AwaitingVoice -> {
                 val currentCandidate = selectionManager.getCurrentCandidate()
                 if (currentCandidate != null) {
                     val prompt = promptBuilder.buildCandidateQuestion(currentCandidate, selectionManager.currentCandidateIndex)
                     speakTts(prompt, "talkti_selection_ask")
-                    showTargetHighlight(currentCandidate.bounds, prompt, Color.YELLOW)
+                    showTargetHighlight(currentCandidate.bounds, Color.YELLOW)
                 }
             }
             is SelectionFlow.Cancelled -> {
@@ -1427,7 +1607,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         val uiTreeJson = extractScreenTree()
         val elements = try {
             Json.decodeFromString<List<UiElement>>(uiTreeJson)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
 
@@ -1484,7 +1664,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
         val elements = try {
             Json.decodeFromString<List<UiElement>>(uiTreeJson)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
 
@@ -1548,6 +1728,8 @@ class TalkTiAccessibilityService : AccessibilityService() {
         guideOrchestrator?.destroy()
         uiChangeDetector?.destroy()
         serviceJob.cancel()
+        appLaunchGuardJob?.cancel()
+        LlmLoadingOverlay.onLongPress = null
         testReceiver?.let {
             try {
                 unregisterReceiver(it)
@@ -1624,10 +1806,10 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return Json.encodeToString(elements)
     }
 
-    private fun showTargetHighlight(bounds: RectDto, message: String, color: Int = Color.RED, keepInfinite: Boolean = false) {
-        val optimizedBounds = findOptimizedBounds(bounds)
+    private fun showTargetHighlight(bounds: RectDto, color: Int = Color.RED, keepInfinite: Boolean = false, skipOptimize: Boolean = false) {
+        val optimizedBounds = if (skipOptimize) bounds else findOptimizedBounds(bounds)
         Log.d(TAG, "showTargetHighlight: original=$bounds, optimized=$optimizedBounds, color=$color")
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         removeTargetHighlight()
 
@@ -1678,7 +1860,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
     private fun removeTargetHighlight() {
         highlightJob?.cancel()
         highlightView?.let {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             windowManager.removeView(it)
             highlightView = null
         }
@@ -1756,7 +1938,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (node.isVisibleToUser) {
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
-                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                if (abs(rect.left - bounds.left) < 50 && abs(rect.top - bounds.top) < 50) {
                     foundNode = node
                     return
                 }
@@ -1848,7 +2030,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             }
             // 방법 2: 클립보드 붙여넣기 (커스텀 EditText 대응, 클릭 없이 직접 paste)
             return try {
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 val clip = android.content.ClipData.newPlainText("talkti_input", text)
                 clipboard.setPrimaryClip(clip)
                 val pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
@@ -1866,7 +2048,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
             if (node.isVisibleToUser) {
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
-                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                if (abs(rect.left - bounds.left) < 50 && abs(rect.top - bounds.top) < 50) {
                     success = injectTextIntoNode(node)
                     if (success) return
                 }
@@ -1917,7 +2099,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 node.getBoundsInScreen(rect)
 
                 // 50픽셀 오차범위 내 좌표 보정 매칭
-                if (Math.abs(rect.left - bounds.left) < 50 && Math.abs(rect.top - bounds.top) < 50) {
+                if (abs(rect.left - bounds.left) < 50 && abs(rect.top - bounds.top) < 50) {
                     var current = node
                     while (current != null) {
                         if (current.isClickable) {
@@ -1972,7 +2154,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         
                         var setResult = false
                         try {
-                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
                             val clip = android.content.ClipData.newPlainText("text", text)
                             clipboard.setPrimaryClip(clip)
                             setResult = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
@@ -2071,13 +2253,140 @@ class TalkTiAccessibilityService : AccessibilityService() {
     }
 
     private fun isKakaoTalkStep(step: GuideStep): Boolean {
-        return step == GuideStep.KAKAOTALK_OPENED ||
+        return step == GuideStep.KAKAOTALK_PRE_OPEN ||
+                step == GuideStep.KAKAOTALK_OPENED ||
                 step == GuideStep.KAKAOTALK_SEARCH_CLICKED ||
                 step == GuideStep.KAKAOTALK_RESULT_SELECTION ||
                 step == GuideStep.KAKAOTALK_CHATROOM_OPENED ||
                 step == GuideStep.KAKAOTALK_PLUS_MENU_OPENED ||
                 step == GuideStep.KAKAOTALK_MEDIA_CHOOSER_OPENED ||
                 step == GuideStep.KAKAOTALK_MEDIA_SEND_READY
+    }
+
+    private fun executeKakaoTalkStepGuide(rootNode: AccessibilityNodeInfo?) {
+        val targetFriend = pendingCommand ?: "아부지"
+        Log.d(TAG, "[디버그] executeKakaoTalkStepGuide 실행: step=$currentGuideStep, targetFriend=$targetFriend")
+        
+        removeTargetHighlight()
+        candidateOverlayManager?.clearOverlays()
+        actionButtonOverlayManager?.clearHighlight()
+
+        val currentStep = currentGuideStep
+
+        when (currentStep) {
+            GuideStep.KAKAOTALK_OPENED -> {
+                mainScope.launch {
+                    delay(600) // 카카오톡 실행 완료 후 600ms 안정화 지연
+                    if (currentGuideStep == GuideStep.KAKAOTALK_OPENED) {
+                        val freshRoot = rootInActiveWindow
+                        val searchButton = findKakaoTalkSearchButton(freshRoot)
+                        if (searchButton != null) {
+                            val rect = Rect()
+                            searchButton.getBoundsInScreen(rect)
+                            val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                            showTargetHighlight(bounds, Color.RED, skipOptimize = true)
+                            if (currentStep != lastGuidedTtsStep) {
+                                lastGuidedTtsStep = currentStep
+                                speakTts("돋보기 모양 검색 버튼을 눌러주세요.")
+                            }
+                        }
+                    }
+                }
+            }
+            GuideStep.KAKAOTALK_SEARCH_CLICKED -> {
+                if (!isTextInjected) {
+                    isTextInjected = true
+                    mainScope.launch {
+                        delay(600) // 검색창 활성화 및 포커스 600ms 안정화 지연
+                        val freshRoot = rootInActiveWindow
+                        val typed = autofillEditTextInActiveWindow(targetFriend)
+                        if (typed) {
+                            if (currentStep == currentGuideStep && currentStep != lastGuidedTtsStep) {
+                                lastGuidedTtsStep = currentStep
+                                speakTts("${targetFriend}을 입력했습니다.")
+                            }
+                        } else {
+                            isTextInjected = false
+                        }
+                    }
+                }
+            }
+            GuideStep.KAKAOTALK_RESULT_SELECTION -> {
+                val resultNode = findKakaoTalkSearchResult(rootNode, targetFriend)
+                if (resultNode != null) {
+                    val rect = Rect()
+                    resultNode.getBoundsInScreen(rect)
+                    val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                    showTargetHighlight(bounds, Color.RED)
+                    if (currentStep != lastGuidedTtsStep) {
+                        lastGuidedTtsStep = currentStep
+                        val josa = getWaGwa(targetFriend)
+                        speakTts("찾으시는 ${targetFriend}${josa} 채팅방이 맞으신가요? 맞다면 채팅방을 눌러주세요.")
+                    }
+                }
+            }
+            GuideStep.KAKAOTALK_CHATROOM_OPENED -> {
+                val chatMenuButton = findKakaoTalkChatMenuButton()
+                if (chatMenuButton != null) {
+                    val rect = Rect()
+                    chatMenuButton.getBoundsInScreen(rect)
+                    val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                    showTargetHighlight(bounds, Color.RED, skipOptimize = true)
+                    if (currentStep != lastGuidedTtsStep) {
+                        lastGuidedTtsStep = currentStep
+                        speakTts("입력창 왼쪽의 플러스 버튼을 눌러주세요.")
+                    }
+                }
+            }
+            GuideStep.KAKAOTALK_PLUS_MENU_OPENED -> {
+                val mediaButton = findKakaoTalkMediaButton(rootNode, mediaType ?: "사진")
+                if (mediaButton != null) {
+                    val rect = Rect()
+                    mediaButton.getBoundsInScreen(rect)
+                    val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                    val typeKorean = if (mediaType == "동영상") "동영상" else "사진"
+                    showTargetHighlight(bounds, Color.RED, skipOptimize = true)
+                    if (currentStep != lastGuidedTtsStep) {
+                        lastGuidedTtsStep = currentStep
+                        speakTts("$typeKorean 전송을 위해 앨범 버튼을 눌러주세요.")
+                    }
+                }
+            }
+            GuideStep.KAKAOTALK_MEDIA_CHOOSER_OPENED -> {
+                val mediaGrid = findKakaoTalkMediaGrid(rootNode)
+                if (mediaGrid != null) {
+                    val rect = Rect()
+                    mediaGrid.getBoundsInScreen(rect)
+                    val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                    val typeKorean = if (mediaType == "동영상") "보낼 동영상" else "보낼 사진"
+                    showTargetHighlight(bounds, Color.RED)
+                    if (currentStep != lastGuidedTtsStep) {
+                        lastGuidedTtsStep = currentStep
+                        speakTts("${typeKorean}을 선택해주세요.") // "보낼" 중복 출력 버그 수정
+                    }
+                }
+            }
+            GuideStep.KAKAOTALK_MEDIA_SEND_READY -> {
+                mainScope.launch {
+                    delay(600) // 사진 선택 후 전송 버튼 하이라이트 전환까지 600ms 안정화 지연
+                    if (currentGuideStep == GuideStep.KAKAOTALK_MEDIA_SEND_READY) {
+                        val freshRoot = rootInActiveWindow
+                        val sendButton = findKakaoTalkMediaSendButton(freshRoot)
+                        if (sendButton != null) {
+                            val rect = Rect()
+                            sendButton.getBoundsInScreen(rect)
+                            val bounds = RectDto(rect.left, rect.top, rect.right, rect.bottom)
+                            showTargetHighlight(bounds, Color.RED)
+                            if (currentStep != lastGuidedTtsStep) {
+                                lastGuidedTtsStep = currentStep
+                                speakTts("우측 상단의 전송 버튼을 눌러주세요.")
+                            }
+                        }
+                    }
+                }
+            }
+            else -> { }
+        }
     }
 
     private fun findKakaoTalkSearchButton(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -2100,7 +2409,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             val rect = Rect()
                             current.getBoundsInScreen(rect)
                             // 실제 돋보기 아이콘 버튼은 가로/세로 300px 미만의 크기입니다.
-                            if (rect.width() > 0 && rect.width() < 300 && rect.height() > 0 && rect.height() < 300) {
+                            if (rect.width() in 1..299 && rect.height() in 1..299) {
                                 return current
                             }
                         }
@@ -2117,6 +2426,22 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun isChatroomNode(node: AccessibilityNodeInfo): Boolean {
+        val texts = mutableListOf<String>()
+        collectAllTexts(node, texts)
+        val timeRegex = Regex("(오전|오후|어제|\\d+월|\\d+일|\\d+\\.\\d+|\\d+:\\d+)")
+        return texts.any { timeRegex.containsMatchIn(it) }
+    }
+
+    private fun collectAllTexts(node: AccessibilityNodeInfo?, list: MutableList<String>) {
+        if (node == null) return
+        node.text?.toString()?.let { if (it.isNotBlank()) list.add(it) }
+        node.contentDescription?.toString()?.let { if (it.isNotBlank()) list.add(it) }
+        for (i in 0 until node.childCount) {
+            collectAllTexts(node.getChild(i), list)
+        }
+    }
+
     private fun findKakaoTalkSearchResult(node: AccessibilityNodeInfo?, query: String): AccessibilityNodeInfo? {
         if (node == null) return null
         if (node.isVisibleToUser) {
@@ -2129,7 +2454,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                 val cleanDesc = desc.replace(" ", "").lowercase()
                 val cleanQuery = query.replace(" ", "").lowercase()
 
-                if (cleanQuery.isNotEmpty() && (cleanText.contains(cleanQuery) || cleanDesc.contains(cleanQuery))) {
+                val isGroupChat = text.contains(",") || desc.contains(",") || text.contains("그룹채팅") || desc.contains("그룹채팅")
+
+                if (cleanQuery.isNotEmpty() && (cleanText.contains(cleanQuery) || cleanDesc.contains(cleanQuery)) && !isGroupChat) {
                     // 메시지 검색 관련 노드는 매칭에서 명시적으로 제외 (채팅방/친구 항목만 선택하도록 필터링)
                     if (!cleanText.contains("메시지") && !cleanText.contains("메세지") && 
                         !cleanText.contains("검색해보세요") && !cleanText.contains("주고받은") &&
@@ -2139,7 +2466,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
                         var current: AccessibilityNodeInfo? = node
                         while (current != null) {
                             if (current.isClickable) {
-                                if (!hasExclusionInSiblingsOrSelf(current)) {
+                                if (!hasExclusionInSiblingsOrSelf(current) && isChatroomNode(current)) {
                                     return current
                                 } else {
                                     break
@@ -2228,7 +2555,7 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return false
     }
 
-    private fun findKakaoTalkChatMenuButton(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+    private fun findKakaoTalkChatMenuButton(): AccessibilityNodeInfo? {
         val rootNode = rootInActiveWindow ?: return null
         
         // 1. 먼저 화면 하단에 있는 메시지 입력창(EditText)을 찾습니다.
@@ -2340,31 +2667,38 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
     private fun findKakaoTalkMediaButton(node: AccessibilityNodeInfo?, mediaType: String): AccessibilityNodeInfo? {
         if (node == null) return null
+        val screenHeight = resources.displayMetrics.heightPixels
         if (node.isVisibleToUser) {
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
             val viewId = node.viewIdResourceName ?: ""
 
-            if (mediaType == "동영상" && (text.contains("동영상") || desc.contains("동영상") || text.contains("비디오") || desc.contains("비디오"))) {
-                var current: AccessibilityNodeInfo? = node
-                while (current != null) {
-                    if (current.isClickable) return current
-                    current = current.parent
-                }
-            }
-            if (mediaType == "사진" && (text.contains("사진") || desc.contains("사진") || text.contains("이미지") || desc.contains("이미지"))) {
-                var current: AccessibilityNodeInfo? = node
-                while (current != null) {
-                    if (current.isClickable) return current
-                    current = current.parent
-                }
-            }
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
 
-            if (text == "앨범" || desc == "앨범" || viewId.endsWith("album_btn") || text.contains("album") || desc.contains("album")) {
-                var current: AccessibilityNodeInfo? = node
-                while (current != null) {
-                    if (current.isClickable) return current
-                    current = current.parent
+            // 플러스 메뉴 버튼들은 항상 화면의 하단 영역(상단 기준 60% 이상)에 존재합니다.
+            if (rect.top > screenHeight * 0.6) {
+                if (mediaType == "동영상" && (text == "동영상" || desc == "동영상" || text == "동영상 버튼" || desc == "동영상 버튼")) {
+                    var current: AccessibilityNodeInfo? = node
+                    while (current != null) {
+                        if (current.isClickable) return current
+                        current = current.parent
+                    }
+                }
+                if (mediaType == "사진" && (text == "사진" || desc == "사진" || text == "앨범" || desc == "앨범" || text == "사진 버튼" || desc == "사진 버튼")) {
+                    var current: AccessibilityNodeInfo? = node
+                    while (current != null) {
+                        if (current.isClickable) return current
+                        current = current.parent
+                    }
+                }
+
+                if (text == "앨범" || desc == "앨범" || viewId.endsWith("album_btn") || text.contains("album") || desc.contains("album")) {
+                    var current: AccessibilityNodeInfo? = node
+                    while (current != null) {
+                        if (current.isClickable) return current
+                        current = current.parent
+                    }
                 }
             }
         }
@@ -2446,6 +2780,48 @@ class TalkTiAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun isMediaSelected(rootNode: AccessibilityNodeInfo?): Boolean {
+        // 1. 체크박스나 아이템 자체의 선택 상태 검사
+        if (hasCheckedMediaItem(rootNode)) return true
+
+        // 2. 전송 버튼 텍스트에 숫자(선택 개수)가 포함되어 있는지 검사 (예: "전송(1)", "전송 (1)")
+        val sendButton = findKakaoTalkMediaSendButton(rootNode)
+        if (sendButton != null) {
+            val text = sendButton.text?.toString() ?: ""
+            val desc = sendButton.contentDescription?.toString() ?: ""
+            val numberRegex = Regex("\\d+")
+            if (numberRegex.containsMatchIn(text) || numberRegex.containsMatchIn(desc)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun hasCheckedMediaItem(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        if (node.isVisibleToUser) {
+            val className = node.className?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+            val text = node.text?.toString() ?: ""
+
+            // 체크박스 또는 선택됨 표시 확인
+            if (node.isChecked || node.isSelected ||
+                desc.contains("선택됨") || desc.contains("체크됨") ||
+                desc.contains("선택 완료") || text.contains("선택됨")
+            ) {
+                val viewId = node.viewIdResourceName ?: ""
+                // 전송 버튼 자체나 확인 버튼이 선택된 것으로 노출되는 경우 오검출 배제
+                if (!viewId.contains("send") && !viewId.contains("ok") && !viewId.contains("confirm")) {
+                    return true
+                }
+            }
+        }
+        for (i in 0 until node.childCount) {
+            if (hasCheckedMediaItem(node.getChild(i))) return true
+        }
+        return false
+    }
+
     private fun findKakaoTalkMediaGridItems(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo> = mutableListOf()): List<AccessibilityNodeInfo> {
         if (node == null) return list
         if (node.isVisibleToUser) {
@@ -2509,4 +2885,15 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
         return false
     }
+
+    private fun getWaGwa(word: String): String {
+        if (word.isEmpty()) return "와의"
+        val lastChar = word.last()
+        if (lastChar in '가'..'힣') {
+            val index = (lastChar.code - 0xAC00) % 28
+            return if (index > 0) "과의" else "와의"
+        }
+        return "와의"
+    }
 }
+

@@ -43,6 +43,9 @@ class UiChangeDetector(
     /** 현재 분석 중인지 여부 (단순 상태 플래그) */
     var isAnalyzing: Boolean = false
 
+    /** 가이드가 활성 상태인지 외부에서 주입하는 체크 함수 */
+    var isGuideActive: (() -> Boolean)? = null
+
     /** 마지막 클릭 발생 시점 */
     private var lastClickTime: Long = 0L
 
@@ -188,6 +191,11 @@ class UiChangeDetector(
                 }
 
                 delay(actualDebounceMs)
+                // 가이드가 이미 종료됐으면 분석 호출 차단
+                if (isGuideActive?.invoke() == false) {
+                    Log.d(TAG, "[디버그] debounce 완료 시점에 가이드 비활성 확인 → onMeaningfulChange 호출 차단")
+                    return@launch
+                }
                 Log.d(TAG, "[디버그] UI 변경 감지: 디바운싱 완료 (대기시간: ${actualDebounceMs}ms) — onMeaningfulChange 호출")
                 onMeaningfulChange?.invoke()
             }

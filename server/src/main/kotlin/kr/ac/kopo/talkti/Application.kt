@@ -15,8 +15,15 @@ import kr.ac.kopo.talkti.backend.validator.RequestValidator
 import kr.ac.kopo.talkti.models.ScreenStateRequest
 import kr.ac.kopo.talkti.models.GuideScreenRequest
 import kr.ac.kopo.talkti.backend.service.GuideService
+import kr.ac.kopo.talkti.backend.experience.ExperienceDatabase
+import kr.ac.kopo.talkti.backend.experience.ExperienceService
+import kr.ac.kopo.talkti.backend.experience.RecordTransitionRequest
+import kr.ac.kopo.talkti.backend.experience.CompleteSessionRequest
 
 val SERVER_PORT = 8080
+
+@kotlinx.serialization.Serializable
+data class StartSessionRequest(val userCommand: String)
 
 fun main() {
     embeddedServer(Netty, port = SERVER_PORT, host = "0.0.0.0", module = Application::module)
@@ -35,6 +42,10 @@ fun Application.module() {
     val guideService = GuideService()
     val fileStorage = FileStorage()
     val validator = RequestValidator()
+    
+    val experienceService = ExperienceService()
+    // DB 초기화 (앱 시작 시 1회)
+    ExperienceDatabase.getConnection()
 
     routing {
         get("/") {
@@ -66,6 +77,22 @@ fun Application.module() {
             println("Guide 요청 수신: cmd='${request.userCommand}', pkg='${request.packageName}', prevState='${request.previousState}'")
             val response = guideService.analyze(request)
             call.respond(response)
+        }
+        // ── 경험 기반 학습 API ──
+        post("/experience/session/start") {
+            val body = call.receive<StartSessionRequest>()
+            val response = experienceService.startSession(body.userCommand)
+            call.respond(response)
+        }
+        post("/experience/transition") {
+            val request = call.receive<RecordTransitionRequest>()
+            experienceService.recordTransition(request)
+            call.respond(mapOf("ok" to true))
+        }
+        post("/experience/session/complete") {
+            val request = call.receive<CompleteSessionRequest>()
+            experienceService.completeSession(request)
+            call.respond(mapOf("ok" to true))
         }
     }
 }

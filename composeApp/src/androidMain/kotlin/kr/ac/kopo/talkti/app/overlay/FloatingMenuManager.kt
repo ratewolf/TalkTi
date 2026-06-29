@@ -26,7 +26,9 @@ class FloatingMenuManager(
     private val onTextInputClick: () -> Unit = {},
     private val onKioskModeClick: () -> Unit = {},
     private val onOpenAppClick: () -> Unit = {},
-    private val onLongClick: () -> Unit = {}
+    private val onLongClick: () -> Unit = {},
+    private val onSuccessClick: () -> Unit = {},
+    private val onFailClick: () -> Unit = {}
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var rootLayout: LinearLayout? = null
@@ -44,6 +46,8 @@ class FloatingMenuManager(
     }
 
     private var mainButton: ImageView? = null
+    private var successButton: android.widget.TextView? = null
+    private var failButton: android.widget.TextView? = null
     private var isProcessing = false
 
     fun show() {
@@ -125,6 +129,43 @@ class FloatingMenuManager(
         }
 
         rootLayout?.addView(mainButton)
+
+        // 성공 버튼 (기본 숨김)
+        successButton = android.widget.TextView(context).apply {
+            text = "✅"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#4CAF50"))
+                setStroke(dp(2), Color.WHITE)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply {
+                topMargin = dp(8)
+            }
+            setOnClickListener { onSuccessClick() }
+            visibility = View.GONE
+        }
+
+        // 실패 버튼 (기본 숨김)
+        failButton = android.widget.TextView(context).apply {
+            text = "❌"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#F44336"))
+                setStroke(dp(2), Color.WHITE)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply {
+                topMargin = dp(8)
+            }
+            setOnClickListener { onFailClick() }
+            visibility = View.GONE
+        }
+
+        rootLayout?.addView(successButton)
+        rootLayout?.addView(failButton)
         windowManager.addView(rootLayout, params)
     }
 
@@ -186,6 +227,26 @@ class FloatingMenuManager(
                 windowManager.addView(it, params)
             } catch (e: Exception) {
             }
+        }
+    }
+
+    /**
+     * 가이드 세션 중일 때 성공/실패 버튼을 표시한다.
+     */
+    fun showFeedbackButtons() {
+        successButton?.post {
+            successButton?.visibility = View.VISIBLE
+            failButton?.visibility = View.VISIBLE
+        }
+    }
+
+    /**
+     * 성공/실패 버튼을 숨긴다.
+     */
+    fun hideFeedbackButtons() {
+        successButton?.post {
+            successButton?.visibility = View.GONE
+            failButton?.visibility = View.GONE
         }
     }
 

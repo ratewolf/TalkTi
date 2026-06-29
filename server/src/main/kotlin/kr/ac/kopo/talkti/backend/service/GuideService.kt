@@ -15,7 +15,8 @@ import kr.ac.kopo.talkti.models.*
 class GuideService(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val nodeParser: UiNodeParser = UiNodeParser(),
-    private val claudeClient: ClaudeClient = ClaudeClient()
+    private val claudeClient: ClaudeClient = ClaudeClient(),
+    private val experienceService: kr.ac.kopo.talkti.backend.experience.ExperienceService = kr.ac.kopo.talkti.backend.experience.ExperienceService()
 ) {
 
     @Serializable
@@ -47,12 +48,16 @@ class GuideService(
         }
         val simplifiedJson = Json.encodeToString(simplifiedElements)
 
+        // 과거 성공 경험 조회
+        val experiencePrompt = experienceService.getExperiencePrompt(request.userCommand)
+
         // 프롬프트 생성
         val prompt = buildGuidePrompt(
             userCommand = request.userCommand,
             uiTreeJson = simplifiedJson,
             packageName = request.packageName,
-            previousState = request.previousState
+            previousState = request.previousState,
+            experiencePrompt = experiencePrompt
         )
 
         println("--- Guide LLM 호출 시작 ---")
@@ -423,7 +428,8 @@ class GuideService(
         userCommand: String,
         uiTreeJson: String,
         packageName: String,
-        previousState: String
+        previousState: String,
+        experiencePrompt: String = ""
     ): String {
         return """
 당신은 어르신의 스마트폰 조작을 돕는 AI 에이전트 '똑띠'입니다.
@@ -438,10 +444,17 @@ class GuideService(
 [상태 종류]
 - SELECT_TARGET: 사용자가 여러 후보 중 하나를 선택해야 함 (장소 목록, 채팅방 목록, 택시 종류 등)
 - PRESS_ACTION: 사용자가 특정 버튼을 눌러야 함 (도착, 호출, 전송, 안내 시작, 결제 등)
+  * 이 버튼을 누르면 가이드가 완전히 종료되는 최종 버튼(안내시작, 호출, 전송, 결제완료 등)이면 actionType을 "FINAL"로 설정
+  * 이 버튼을 누르면 다음 단계가 있는 중간 버튼(도착, 검색 등)이면 actionType을 null로 설정
 - SELECT_OPTION: 사용자가 옵션 중 하나를 선택해야 함 (경로 추천 등)
 - CONFIRM: 사용자가 최종 확인을 해야 함
-- COMPLETE: 가이드 완료
-- IDLE: 사용자가 해야 할 행동 없음
+- COMPLETE: 가이드 완료. 반드시 아래 경우에 COMPLETE를 반환:
+  * 이전 상태가 PRESS_ACTION이었고, 현재 화면이 내비게이션/길안내/경로안내 화면으로 전환된 경우 (안내시작 버튼을 누른 결과)
+  * 이전 상태가 PRESS_ACTION이었고, 택시/배달 호출이 완료된 화면인 경우
+  * 이전 상태가 PRESS_ACTION이었고, 메시지/파일 전송이 완료된 경우
+  * 사용자가 원하는 최종 목표가 완전히 달성된 경우
+  COMPLETE 시 tts는 "안내를 완료했어요." 또는 상황에 맞는 완료 멘트로 설정.
+- IDLE: 현재 화면에서 사용자가 해야 할 행동이 명확하지 않거나, 가이드와 무관한 화면인 경우에만 사용. PRESS_ACTION 다음에는 IDLE 대신 COMPLETE를 우선 고려할 것.
 
 [targets 규칙]
 - SELECT_TARGET / SELECT_OPTION: 선택 가능한 후보의 candidateId 를 최대 10개까지 배열로 반환
@@ -452,6 +465,21 @@ class GuideService(
 - 어르신(60대 이상)이 이해할 수 있는 쉽고 짧은 문장
 - "~해주세요" 존댓말 사용
 - 20자 이내 권장
+
+[FINAL 액션 규칙 - 반드시 준수]
+PRESS_ACTION 응답 시 아래 기준으로 actionType을 반드시 설정하라:
+- actionType = "FINAL": 이 버튼을 누르면 목표가 완전히 달성되어 가이드가 종료되는 최종 버튼
+  해당 버튼 예시: "안내시작", "안내 시작", "호출", "전송", "보내기", "결제", "결제하기", "예약완료"
+  판단 기준: 이 버튼을 누른 후 사용자가 더 이상 선택하거나 누를 것이 없는 경우
+- actionType = null: 이 버튼을 누르면 다음 단계가 있는 중간 버튼
+  해당 버튼 예시: "도착", "출발", "검색", "다음", "확인(중간 단계)"
+  판단 기준: 이 버튼을 누른 후 새로운 화면이 열리고 추가 선택이 필요한 경우
+
+예시:
+- 길찾기에서 "도착" 버튼 → actionType = null (누르면 경로 선택 화면이 열림)
+- 길찾기에서 "안내시작" 버튼 → actionType = "FINAL" (누르면 내비 시작, 더 할 일 없음)
+- 택시에서 "호출" 버튼 → actionType = "FINAL" (누르면 택시 호출 완료)
+- 카카오톡에서 "전송" 버튼 → actionType = "FINAL" (누르면 메시지 전송 완료)
 
 [자동 텍스트 입력 규칙]
 - 현재 활성화된 화면에서 텍스트를 입력해야 하는 입력창(EditText 등)을 가이드하는 단계라면:
@@ -480,12 +508,12 @@ class GuideService(
 - 택시 앱 (카카오T 등):
   * 장소 선택 후 택시 종류 선택은 SELECT_OPTION 이고 택시 종류 목록들을 선택하세요.
   * '호출' 관련 버튼은 PRESS_ACTION 이고 해당 버튼을 선택하세요.
-  * 현재 화면에 목적지 검색 입력창(EditText)이 보이고, previousState가 "PRESS_ACTION_EDIT_TEXT"가 아니라면:
-    상태를 PRESS_ACTION_EDIT_TEXT로 설정하고 해당 입력창을 target으로 지정하며 TTS로 '목적지 검색창을 눌러주세요.'라고 안내하세요.
-    (actionType/actionArguments는 설정하지 않음)
-  * previousState가 "PRESS_ACTION_EDIT_TEXT"이면 사용자가 검색창을 탭한 직후이므로:
-    상태를 PRESS_ACTION으로 설정하고 actionType="ACTION_SET_TEXT", actionArguments에 목적지 키워드(예: "서울역")를 설정하세요.
-  * 검색창에 텍스트가 입력된 후 아래에 추천 장소 목록이 나타나면, '검색' 버튼이 보이더라도 절대 누르라고 안내하지 말고 즉시 SELECT_TARGET으로 장소 목록을 선택하십시오. (카카오T는 실시간 검색이라 검색 버튼 불필요)
+  * 현재 화면에 목적지 검색 입력창(EditText) 또는 '가고 싶은 곳을 찾아보세요' 버튼이 보이고 previousState가 "PRESS_ACTION_EDIT_TEXT"가 아니라면:
+    상태를 PRESS_ACTION_EDIT_TEXT로 설정하고 해당 요소를 target으로 지정하며 TTS로 '목적지 검색창을 눌러주세요.'라고 안내하세요. (actionType/actionArguments 설정 안 함)
+  * previousState가 "PRESS_ACTION_EDIT_TEXT"이면 사용자가 검색창을 탭한 직후이므로 즉시 텍스트 자동 입력:
+    상태를 PRESS_ACTION으로 설정하고 actionType="ACTION_SET_TEXT", actionArguments에 목적지 키워드(예: "서울역")를 설정하세요. target은 화면에서 EditText 또는 검색 입력창으로 지정하세요.
+  * previousState가 "PRESS_ACTION"이고 현재 화면에 검색어가 이미 입력된 EditText와 장소 목록이 보이면: 절대 검색 버튼을 누르라고 안내하지 말고 즉시 SELECT_TARGET으로 장소 목록의 candidateId들을 선택하십시오. 카카오T는 실시간 검색이므로 검색 버튼이 보여도 누를 필요가 없습니다. 이 규칙은 반드시 지켜야 합니다.
+  * previousState가 "PRESS_ACTION"이고 장소 목록이 안 보이면: unchanged=true로 응답하십시오.
 - 채팅 앱 (카카오톡 등):
   * 채팅방 목록은 SELECT_TARGET 이고 채팅방 목록들을 선택하세요.
   * '전송' 또는 '보내기' 관련 버튼은 PRESS_ACTION 이고 해당 버튼을 선택하세요.
@@ -508,6 +536,7 @@ class GuideService(
   "actionArguments": "입력할 핵심 키워드" or null
 }
 
+${if (experiencePrompt.isNotBlank()) experiencePrompt else ""}
 [입력 정보]
 사용자 요청: "$userCommand"
 앱 패키지명: $packageName

@@ -81,6 +81,23 @@ class GuideOrchestrator(
     /** 현재 서버 응답의 타겟 목록 (오버레이 터치 콜백에서 사용) */
     private var currentTargets: List<GuideTarget> = emptyList()
 
+    /** 현재 안내 중인 타겟 텍스트 (최종 버튼 여부 판단용) */
+    var currentTargetText: String = ""
+        private set
+
+    /** ACTION_SET_TEXT 후속 분석 진행 중 외부 onUiChanged 호출 차단 플래그 */
+    private var isPostSetTextAnalyzing: Boolean = false
+
+    /** 마지막 서버 응답의 actionType (FINAL 여부 판단용) */
+    var lastActionType: String? = null
+        private set
+
+    /** 경험 기반 학습 세션 ID (-1이면 미등록) */
+    private var experienceSessionId: Long = -1L
+
+    /** 현재 세션의 상태 전이 단계 카운터 */
+    private var experienceStep: Int = 0
+
     /**
      * TTS 인스턴스를 설정한다.
      */
@@ -114,10 +131,34 @@ class GuideOrchestrator(
         guideEnabled = true
         isPendingStop = false
         Log.d(TAG, "[디버그] 가이드 활성화 (startGuide - gen=$guideGeneration): command='$command', pkg='$packageName'")
+
+        // 경험 기반 학습 세션 시작
+        experienceSessionId = -1L
+        experienceStep = 0
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val response = client.post("$baseUrl/experience/session/start") {
+                    contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
+                    setBody("""{"userCommand": "$command"}""")
+                }
+                val body = response.body<String>()
+                val idMatch = Regex("\"sessionId\"\\s*:\\s*(\\d+)").find(body)
+                if (idMatch != null) {
+                    experienceSessionId = idMatch.groupValues[1].toLong()
+                    Log.d(TAG, "[Experience] 세션 시작됨: id=$experienceSessionId")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "[Experience] 세션 시작 실패 (무시): ${e.message}")
+            }
+        }
     }
 
     /** 가이드 종료 시 호출되는 콜백 */
     var onStopGuide: (() -> Unit)? = null
+
+    /** COMPLETE 상태 진입 즉시 호출되는 콜백 (세션 완전 종료용) */
+    var onGuideComplete: (() -> Unit)? = null
 
     /**
      * 가이드를 종료하고 상태를 초기화한다.
@@ -134,7 +175,11 @@ class GuideOrchestrator(
         candidateOverlayManager.clearOverlays()
         actionButtonOverlayManager.clearHighlight()
         guideEnabled = false
+        currentTargetText = ""
+        isPostSetTextAnalyzing = false
+        lastActionType = null
         isPendingStop = false
+
         onStopGuide?.invoke()
         Log.d(TAG, "[디버그] 가이드 비활성화 (stopGuide - gen=$guideGeneration)")
     }
@@ -167,9 +212,15 @@ class GuideOrchestrator(
         actionButtonOverlayManager.clearHighlight()
     }
 
-    fun onUiChanged(uiTreeJson: String, scope: CoroutineScope) {
+    fun onUiChanged(uiTreeJson: String, scope: CoroutineScope, isManualTrigger: Boolean = false) {
         if (!isActive) {
             Log.d(TAG, "[디버그] Guide 비활성 상태이므로 분석을 건너뜁니다.")
+            return
+        }
+
+        // ACTION_SET_TEXT 후속 분석 진행 중이면 외부 호출 차단
+        if (isPostSetTextAnalyzing && !isManualTrigger) {
+            Log.d(TAG, "[디버그] ACTION_SET_TEXT 후속 분석 진행 중 → 외부 onUiChanged 호출 차단")
             return
         }
 
@@ -275,8 +326,39 @@ class GuideOrchestrator(
         }
 
         Log.d(TAG, "[디버그] 가이드 상태 전이: $currentState → $newState, 타겟 개수: ${optimizedTargets.size}")
+
+        // 경험 기반 학습 — 상태 전이 기록
+        val fromStateName = currentState.name
+        val toStateName = newState.name
+        val actionDesc = when (newState) {
+            GuideState.SELECT_TARGET -> "후보 ${optimizedTargets.size}개 표시"
+            GuideState.SELECT_OPTION -> "옵션 ${optimizedTargets.size}개 표시"
+            GuideState.PRESS_ACTION -> "버튼 안내: ${optimizedTargets.firstOrNull()?.text ?: ""}"
+            GuideState.COMPLETE -> "가이드 완료"
+            GuideState.IDLE -> "가이드 종료"
+            else -> newState.name
+        }
+        if (experienceSessionId != -1L) {
+            experienceStep++
+            val stepSnapshot = experienceStep
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    client.post("$baseUrl/experience/transition") {
+                        contentType(ContentType.Application.Json)
+                        header("bypass-tunnel-reminder", "true")
+                        setBody("""{"sessionId": $experienceSessionId, "step": $stepSnapshot, "fromState": "$fromStateName", "toState": "$toStateName", "actionTaken": "$actionDesc"}""")
+                    }
+                    Log.d(TAG, "[Experience] 전이 기록: $fromStateName → $toStateName")
+                } catch (e: Exception) {
+                    Log.w(TAG, "[Experience] 전이 기록 실패 (무시): ${e.message}")
+                }
+            }
+        }
+
         currentState = newState
+        lastActionType = response.actionType
         currentTargets = optimizedTargets
+        currentTargetText = optimizedTargets.firstOrNull()?.text ?: ""
 
         // 기존 오버레이 정리 및 재배치 (좌표가 변경되었을 수 있으므로 항상 실행)
         candidateOverlayManager.clearOverlays()
@@ -297,18 +379,30 @@ class GuideOrchestrator(
             GuideState.COMPLETE -> {
                 candidateOverlayManager.clearOverlays()
                 actionButtonOverlayManager.clearHighlight()
-                speakTts("안내가 완료되었습니다.")
+                speakTts("안내를 시작합니다.")
 
                 guideEnabled = false
                 currentState = GuideState.COMPLETE
                 isPendingStop = true
 
-                Log.d(TAG, "[디버그] Guide 완료 상태 진입 (정리 예약)")
+                // COMPLETE 진입 즉시 서비스에 완전 종료를 알린다.
+                // (TTS 완료를 기다리는 isPendingStop 경로와 별개로, 세션을 곧바로 꺼서
+                //  화면 변경으로 인한 좀비 분석 재실행을 차단한다.)
+                onGuideComplete?.invoke()
+
+                Log.d(TAG, "[디버그] Guide 완료 상태 진입 (정리 예약 + 즉시 세션 종료 통지)")
 
                 return
             }
             GuideState.IDLE -> {
-                // 할 일 없음
+                // 서버가 IDLE을 반환했다는 건 더 이상 안내할 것이 없다는 의미
+                // (예: 안내시작 후 내비게이션 화면으로 전환된 경우)
+                // 가이드를 완전히 종료한다.
+                Log.d(TAG, "[디버그] 서버 IDLE 응답 수신 → 가이드 종료")
+                guideEnabled = false
+                isPendingStop = false
+
+                onGuideComplete?.invoke()
             }
         }
 
@@ -326,23 +420,36 @@ class GuideOrchestrator(
                     // Kakao T 실시간 장소 리스트가 렌더링될 때까지 대기
                     // 300ms씩 최대 4번(1.2초) 대기하면서 클릭 가능 후보 3개 이상이면 렌더 완료로 판단
                     var placeListReady = false
-                    repeat(4) { attempt ->
+                    var latestTree = service.extractScreenTree()
+                    repeat(6) { attempt ->
                         if (!placeListReady) {
                             delay(300)
                             val tree = service.extractScreenTree()
-                            val candidates = try {
+                            latestTree = tree
+                            val hasPlaceItems = try {
                                 kotlinx.serialization.json.Json.decodeFromString<List<kr.ac.kopo.talkti.models.UiElement>>(tree)
-                                    .count { it.clickable && it.visibleToUser && it.enabled }
-                            } catch (e: Exception) { 0 }
-                            Log.d(TAG, "[디버그] 장소 리스트 렌더 대기 (${attempt + 1}/4): 클릭 가능 후보 $candidates 개")
-                            if (candidates >= 3) {
+                                    .filter { it.clickable && it.visibleToUser && it.enabled }
+                                    .any { elem ->
+                                        val t = elem.text.trim()
+                                        t.isNotBlank() &&
+                                        !setOf("검색", "뒤로", "닫기", "취소", "홈", "회사", "즐겨찾는 장소 추가").any { t.contains(it) } &&
+                                        t.length >= 2
+                                    }
+                            } catch (e: Exception) { false }
+                            Log.d(TAG, "[디버그] 장소 리스트 렌더 대기 (${attempt + 1}/6): hasPlaceItems=$hasPlaceItems")
+                            if (hasPlaceItems) {
                                 placeListReady = true
                             }
                         }
                     }
                     Log.d(TAG, "[디버그] 자동 입력 완료 → 후속 분석 트리거 (placeListReady=$placeListReady)")
-                    val newTree = service.extractScreenTree()
-                    onUiChanged(newTree, service.guideScope)
+                    isPostSetTextAnalyzing = true
+                    // hasPlaceItems 확인에 쓴 마지막 트리를 재사용 (타이밍 불일치 방지)
+                    val newTree = latestTree
+                    onUiChanged(newTree, service.guideScope, isManualTrigger = true)
+                    // 분석 완료 후 플래그 해제 (2초 후)
+                    delay(2000)
+                    isPostSetTextAnalyzing = false
                 }
             }
         }
@@ -534,6 +641,32 @@ class GuideOrchestrator(
             }
         }
         return false
+    }
+
+    /**
+     * 사용자가 성공/실패 버튼을 눌렀을 때 경험 세션을 완료 처리한다.
+     */
+    fun recordExperienceResult(success: Boolean) {
+        val sessionId = experienceSessionId
+        val steps = experienceStep
+        if (sessionId == -1L) {
+            Log.w(TAG, "[Experience] 기록할 세션 없음 (무시)")
+            return
+        }
+        experienceSessionId = -1L
+        experienceStep = 0
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                client.post("$baseUrl/experience/session/complete") {
+                    contentType(ContentType.Application.Json)
+                    header("bypass-tunnel-reminder", "true")
+                    setBody("""{"sessionId": $sessionId, "success": $success, "totalSteps": $steps}""")
+                }
+                Log.d(TAG, "[Experience] 세션 완료 기록: id=$sessionId, success=$success, steps=$steps")
+            } catch (e: Exception) {
+                Log.w(TAG, "[Experience] 세션 완료 기록 실패 (무시): ${e.message}")
+            }
+        }
     }
 
     /**
