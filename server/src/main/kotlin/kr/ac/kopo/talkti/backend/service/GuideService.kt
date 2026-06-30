@@ -84,9 +84,30 @@ class GuideService(
                     }
                 }
 
+                // targets 매핑 직후, 옵션 모달(SELECT_OPTION)이고 targets가 3개 이상이면
+                // 마지막 타겟(장바구니 담기)을 제외한 나머지를 하나의 bounding box로 합침
+                val finalTargets = if (llmRes.state == "SELECT_OPTION" && targets.size >= 3) {
+                    val actionTarget = targets.last()
+                    val optionTargets = targets.dropLast(1)
+                    val mergedBounds = RectDto(
+                        left = optionTargets.minOf { it.bounds.left },
+                        top = optionTargets.minOf { it.bounds.top },
+                        right = optionTargets.maxOf { it.bounds.right },
+                        bottom = optionTargets.maxOf { it.bounds.bottom }
+                    )
+                    val mergedOptionTarget = GuideTarget(
+                        candidateId = optionTargets.first().candidateId,
+                        text = "온도/사이즈 선택",
+                        bounds = mergedBounds
+                    )
+                    listOf(mergedOptionTarget, actionTarget)
+                } else {
+                    targets
+                }
+
                 GuideScreenResponse(
                     state = llmRes.state,
-                    targets = targets,
+                    targets = finalTargets,
                     tts = llmRes.tts,
                     unchanged = llmRes.unchanged,
                     actionType = llmRes.actionType,
@@ -521,7 +542,7 @@ PRESS_ACTION 응답 시 아래 기준으로 actionType을 반드시 설정하라
   * 현재 대화방에서 메시지 입력을 기다리는 상태라면, 상태는 PRESS_ACTION이고 actionType="ACTION_SET_TEXT"와 actionArguments에 전송할 메시지를 설정하세요.
 - 키오스크 앱 (무인 주문기 등):
   * 메뉴 목록(커피/에이드/티/디저트 탭 안의 항목들)이 보이면 SELECT_TARGET으로 메뉴 항목을 선택하게 하세요.
-  * 메뉴 선택 시 뜨는 옵션 모달(온도, 사이즈, 수량과 함께 "장바구니 담기" 버튼이 한 화면에 보일 때): 상태를 SELECT_OPTION으로 응답하세요. targets는 정확히 2개여야 합니다: [1] 온도 선택과 사이즈 선택 버튼들을 모두 포함하는 가장 바깥쪽 컨테이너 영역 하나(개별 HOT/ICE/Regular/Large 버튼을 따로따로 넣지 마십시오), [2] 장바구니 담기 버튼 하나. tts는 "온도와 사이즈를 선택하시고, 다 선택하셨으면 장바구니 담기 버튼을 눌러주세요." 형태로 작성하세요.
+  * 메뉴 선택 시 뜨는 옵션 모달(온도, 사이즈, 수량과 함께 "장바구니 담기" 버튼이 한 화면에 보일 때): 상태를 SELECT_OPTION으로 응답하세요. targets에는 온도 선택 버튼들(HOT, ICE 등)과 사이즈 선택 버튼들(Regular, Large 등)의 candidateId를 모두 개별적으로 포함하고, 마지막에 장바구니 담기 버튼의 candidateId를 추가하세요. (예: HOT, ICE, Regular, Large, 장바구니담기 = 5개) tts는 "온도와 사이즈를 선택하시고, 다 선택하셨으면 장바구니 담기 버튼을 눌러주세요." 형태로 작성하세요.
   * 장바구니 화면에서 "주문하기" 버튼은 PRESS_ACTION으로 안내하세요.
   * 결제 수단 선택(신용카드/간편결제) 화면은 SELECT_OPTION으로 처리하세요.
   * "영수증을 출력하시겠습니까?" 같은 확인 화면은 SELECT_OPTION으로 처리하세요.
