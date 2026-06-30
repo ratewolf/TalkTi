@@ -657,6 +657,9 @@ class GuideOrchestrator(
         experienceStep = 0
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                // 직전에 전송된 /experience/transition 요청이 서버에 먼저 도착하도록
+                // 약간의 지연을 둔다 (마지막 단계 기록 누락/race condition 방지)
+                delay(400)
                 client.post("$baseUrl/experience/session/complete") {
                     contentType(ContentType.Application.Json)
                     header("bypass-tunnel-reminder", "true")
