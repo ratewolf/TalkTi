@@ -227,6 +227,32 @@ class UiChangeDetector(
     }
 
     /**
+     * 현재 화면을 기준으로 Baseline을 강제 업데이트한다.
+     * 이후 발생하는 UI 변경은 이 시점의 화면과 비교된다.
+     */
+    fun updateBaseline(uiTreeJson: String, screenHeight: Int) {
+        val elements = try {
+            Json.decodeFromString<List<UiElement>>(uiTreeJson)
+        } catch (e: Exception) {
+            return
+        }
+
+        previousHeaderTexts = elements
+            .filter { it.visibleToUser && it.bounds.top < screenHeight * 0.15 }
+            .map { "${it.text}_${it.contentDescription}".trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
+        previousClickableTexts = elements
+            .filter { it.clickable && it.enabled && it.visibleToUser }
+            .map { "${it.text}_${it.contentDescription}".trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
+        Log.d(TAG, "[디버그] UI Baseline 강제 업데이트 완료 (header=${previousHeaderTexts.size}, clickable=${previousClickableTexts.size})")
+    }
+
+    /**
      * 리소스 정리.
      */
     fun destroy() {
