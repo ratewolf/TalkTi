@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ImageView
 import android.annotation.SuppressLint
 
 @SuppressLint("StaticFieldLeak", "SetTextI18n")
@@ -58,23 +59,18 @@ object LlmLoadingOverlay {
             setPadding(pad, pad, pad, pad)
         }
 
-        // 캐릭터 자리표시자 (향후 미니멀 캐릭터 영역)
-        val characterPlaceholder = TextView(context).apply {
-            text = "똑띠"
-            textSize = 20f
-            setTextColor(Color.BLACK)
-            gravity = Gravity.CENTER
-            setTypeface(null, Typeface.BOLD)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#FEE500")) // 카카오 옐로우 느낌
-            }
-            val size = dpToPx(context, 80f).toInt()
+        // 캐릭터 영역 (ImageView)
+        val characterImageView = ImageView(context).apply {
+            setImageResource(R.drawable.loading_character)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+
+            val size = dpToPx(context, 250f).toInt()
             layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                bottomMargin = dpToPx(context, 24f).toInt()
+                bottomMargin = dpToPx(context, 20f).toInt()
             }
         }
-        cardLayout.addView(characterPlaceholder)
+        cardLayout.addView(characterImageView)
 
         // 고령층을 위한 큰 텍스트 메시지
         val messageText = TextView(context).apply {
