@@ -369,7 +369,25 @@ class GuideOrchestrator(
 
         when (newState) {
             GuideState.SELECT_TARGET, GuideState.SELECT_OPTION -> {
-                showCandidateOverlays(optimizedTargets)
+                if (newState == GuideState.SELECT_OPTION && optimizedTargets.size >= 2) {
+                    // 옵션 모달 + 액션 버튼이 함께 온 경우: 시간차 오버레이 전환
+                    val optionTarget = optimizedTargets.first()
+                    val actionTarget = optimizedTargets.last()
+                    
+                    // 1단계: 옵션 영역 오버레이
+                    showActionOverlay(listOf(optionTarget))
+                    
+                    CoroutineScope(Dispatchers.Main).launch {
+                        delay(3000) // 옵션 선택 시간 확보
+                        // 같은 가이드 상태/타겟일 때만 전환 (중간에 취소/변경 안 됐을 때)
+                        if (currentState == GuideState.SELECT_OPTION && currentTargets == optimizedTargets) {
+                            actionButtonOverlayManager.clearHighlight()
+                            showActionOverlay(listOf(actionTarget))
+                        }
+                    }
+                } else {
+                    showCandidateOverlays(optimizedTargets)
+                }
             }
             GuideState.PRESS_ACTION, GuideState.PRESS_ACTION_EDIT_TEXT, GuideState.CONFIRM -> {
                 if (!isSetTextAction) {
