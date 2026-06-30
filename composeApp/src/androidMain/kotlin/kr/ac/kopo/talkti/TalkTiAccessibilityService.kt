@@ -1160,26 +1160,35 @@ class TalkTiAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun startGuideFlow(command: String, packageName: String) {
-        // reset() 은 호출하지 않는다. (UiChangeDetector 가 isFirstRun 으로 빠지면
-        //  로딩바 폴링/debounce 를 건너뛰고 즉시 분석해버리므로)
-        uiChangeDetector?.isAppLaunching = true   // 앱 실행 과도기 동안 이벤트 폭주 차단
+    private fun startGuideFlow(command: String, packageName: String, forceFirstAnalysis: Boolean = true) {
+        Log.d(TAG, "[디버그] startGuideFlow 시작: forceFirstAnalysis=$forceFirstAnalysis, pkg=$packageName")
+
+        if (forceFirstAnalysis) {
+            uiChangeDetector?.isAppLaunching = true   // 앱 실행 과도기 동안 이벤트 폭주 차단
+
+            // 고정 시간 대기(delay 600/1200)는 제거한다.
+            // 대신 onAccessibilityEvent 에서 TYPE_WINDOW_STATE_CHANGED(32) 이벤트가 오면
+            // 그때 가드를 풀고 분석을 시작한다 (releaseAppLaunchGuard()).
+            //
+            // 안전장치: 32 이벤트가 끝내 오지 않는 앱을 대비해 최대 3초 후 강제로 가드를 푼다.
+            appLaunchGuardJob?.cancel()
+            appLaunchGuardJob = guideScope.launch {
+                delay(3000)
+                if (uiChangeDetector?.isAppLaunching == true) {
+                    Log.d(TAG, "[디버그] 앱 실행 가드 타임아웃(3초) — 화면 전환 이벤트 없이 강제 해제")
+                    releaseAppLaunchGuard(packageName)
+                }
+            }
+        } else {
+            // 이미 해당 앱인 경우(CLICK 등), 가드를 걸지 않고 현재 화면을 baseline으로 설정하여
+            // '다음' 화면 변화부터 가이드가 동작하도록 함 (중복 /guide 호출 방지)
+            uiChangeDetector?.isAppLaunching = false
+            val currentTree = extractScreenTree()
+            uiChangeDetector?.updateBaseline(currentTree, resources.displayMetrics.heightPixels)
+        }
+
         guideOrchestrator?.startGuide(command, packageName)
         floatingMenuManager?.showFeedbackButtons()
-
-        // 고정 시간 대기(delay 600/1200)는 제거한다.
-        // 대신 onAccessibilityEvent 에서 TYPE_WINDOW_STATE_CHANGED(32) 이벤트가 오면
-        // 그때 가드를 풀고 분석을 시작한다 (releaseAppLaunchGuard()).
-        //
-        // 안전장치: 32 이벤트가 끝내 오지 않는 앱을 대비해 최대 3초 후 강제로 가드를 푼다.
-        appLaunchGuardJob?.cancel()
-        appLaunchGuardJob = guideScope.launch {
-            delay(3000)
-            if (uiChangeDetector?.isAppLaunching == true) {
-                Log.d(TAG, "[디버그] 앱 실행 가드 타임아웃(3초) — 화면 전환 이벤트 없이 강제 해제")
-                releaseAppLaunchGuard(packageName)
-            }
-        }
     }
 
     /**
@@ -1413,7 +1422,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
 
                     val targetBounds = response.targetBounds
                     if (targetBounds != null) {
-                        val keepInfinite = (response.actionType == "GUIDE" || response.actionType == "ASK_USER")
+                        // [수정] CLICK, ACTION_SET_TEXT 도 가이드가 시작될 것이므로 무한 유지(클릭 전까지)
+                        val keepInfinite = (response.actionType == "GUIDE" || response.actionType == "ASK_USER" || 
+                                           response.actionType == "CLICK" || response.actionType == "ACTION_SET_TEXT")
                         // CLICK 같은 단일 액션 버튼은 서버가 준 좌표가 이미 정확하므로 좌표 보정(findOptimizedBounds)을 건너뛴다.
                         // (가장자리 버튼이 옆 버튼 좌표로 흘러 오른쪽으로 치우치는 문제 방지)
                         // GUIDE(목록)/ASK_USER 는 기존대로 보정을 적용한다.
@@ -1448,8 +1459,9 @@ class TalkTiAccessibilityService : AccessibilityService() {
                             if (currentPkg.isNotBlank()) {
                                 val finalGoal = agentSessionManager.currentGoal ?: command
                                 errorHandlingManager.onGuideStarted(currentPkg, finalGoal)
-                                startGuideFlow(finalGoal, currentPkg)
-                                keepLoadingOverlay = true
+                                // [수정] 이미 해당 앱 내에서 CLICK 액션을 가이드하는 것이므로 forceFirstAnalysis = false
+                                startGuideFlow(finalGoal, currentPkg, forceFirstAnalysis = false)
+                                keepLoadingOverlay = false
                             }
                         }
                         else -> {
