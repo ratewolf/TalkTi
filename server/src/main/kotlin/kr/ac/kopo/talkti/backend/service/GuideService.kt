@@ -102,6 +102,7 @@ class GuideService(
                         text = "온도/사이즈 선택",
                         bounds = mergedBounds
                     )
+                    println("🔍 병합된 optionBounds: $mergedBounds, 개별: ${optionTargets.map { it.bounds }}")
                     listOf(mergedOptionTarget, actionTarget)
                 } else {
                     targets
