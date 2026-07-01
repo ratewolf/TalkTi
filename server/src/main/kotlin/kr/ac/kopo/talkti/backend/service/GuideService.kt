@@ -84,6 +84,8 @@ class GuideService(
                     }
                 }
 
+                println("🔍 매핑된 targets 개수: ${targets.size}, candidateId들: ${targets.map { it.candidateId }}")
+
                 // targets 매핑 직후, 옵션 모달(SELECT_OPTION)이고 targets가 3개 이상이면
                 // 마지막 타겟(장바구니 담기)을 제외한 나머지를 하나의 bounding box로 합침
                 val finalTargets = if (llmRes.state == "SELECT_OPTION" && targets.size >= 3) {

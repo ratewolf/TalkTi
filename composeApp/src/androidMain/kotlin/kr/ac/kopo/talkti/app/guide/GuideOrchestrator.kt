@@ -375,7 +375,7 @@ class GuideOrchestrator(
                     val actionTarget = optimizedTargets.last()
                     
                     // 1단계: 옵션 영역 오버레이
-                    showActionOverlay(listOf(optionTarget))
+                    showActionOverlay(listOf(optionTarget), skipShrink = true)
                     
                     CoroutineScope(Dispatchers.Main).launch {
                         delay(3000) // 옵션 선택 시간 확보
@@ -613,7 +613,7 @@ class GuideOrchestrator(
     /**
      * 액션 버튼형 오버레이를 표시한다.
      */
-    private fun showActionOverlay(targets: List<GuideTarget>) {
+    private fun showActionOverlay(targets: List<GuideTarget>, skipShrink: Boolean = false) {
         if (targets.isEmpty()) return
 
         val first = targets.first()
@@ -625,8 +625,9 @@ class GuideOrchestrator(
 
         // 하나의 큰 bounds 안에 여러 클릭 요소가 있으면 타겟 텍스트에 맞게 좁힘
         // (예: 카카오톡 '+' 버튼 bounds가 하단 입력 바 전체를 덮는 경우)
+        // skipShrink=true면 의도적으로 큰 영역(예: 키오스크 옵션 컨테이너)을 그대로 사용
         val service = TalkTiAccessibilityService.instance
-        val tightBounds = service?.shrinkBoundsIfMultipleElements(b, first.text) ?: b
+        val tightBounds = if (skipShrink) b else (service?.shrinkBoundsIfMultipleElements(b, first.text) ?: b)
 
         Log.d(TAG, "[디버그] 버튼 선택 하이라이트 표시: ID=${first.candidateId}, 텍스트=${first.text}, 원본=${b}, 최종=${tightBounds}")
         actionButtonOverlayManager.showActionButtonHighlight(
